@@ -19,6 +19,12 @@ function Icon({ name, size = 18 }) {
     refresh: <><path d="M20 7v5h-5M4 17v-5h5" /><path d="M5.5 9a7 7 0 0 1 11.6-2L20 12M4 12l2.9 5a7 7 0 0 0 11.6-2" /></>,
     menu: <><path d="M4 6h16M4 12h16M4 18h16" /></>,
     shield: <><path d="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11Z" /><path d="m9 12 2 2 4-4" /></>,
+    layers: <><path d="m12 3 9 5-9 5-9-5 9-5Z" /><path d="m3 12 9 5 9-5M3 16l9 5 9-5" /></>,
+    wand: <><path d="m15 4 5 5M4 20 17 7M7 4v3M5.5 5.5h3M19 15v4M17 17h4" /><path d="m12 6 6 6" /></>,
+    cut: <><circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="m8.1 8.1 12 12M14 6l6-2M8.1 15.9 14 10" /></>,
+    play: <><rect x="3" y="4" width="18" height="16" rx="3" /><path d="m10 9 5 3-5 3V9Z" /></>,
+    scan: <><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3" /><circle cx="12" cy="11" r="3" /><path d="M7 20c.7-2.4 2.4-3.5 5-3.5s4.3 1.1 5 3.5" /></>,
+    arrowDown: <><path d="M12 3v12M7 10l5 5 5-5M5 21h14" /></>,
   }
 
   return (
@@ -98,6 +104,9 @@ function App() {
     && photo.subjectConfidence >= 70
     && typeof photo.score === 'number'
   )
+  const selectablePhotos = analyzed ? photos.filter(isSelectablePhoto) : photos
+  const allPhotosSelected = selectablePhotos.length > 0
+    && selectablePhotos.every((photo) => photo.selected)
   const visiblePhotos = photos.filter((photo) => {
     if (activeFilter === 'selected') return photo.selected
     if (activeFilter === 'best') return photo.autoSelected
@@ -317,6 +326,24 @@ function App() {
     setMobileNavOpen(false)
   }
 
+  function navigateToTool(tool) {
+    setMobileNavOpen(false)
+    if (tool === 'search') {
+      document.getElementById('search-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      document.querySelector('#image-query')?.focus({ preventScroll: true })
+      return
+    }
+    if (tool === 'analysis') {
+      if (!photos.length) {
+        setNotice('Önce Görsel Avcısı ile fotoğraf arayın.')
+        document.getElementById('search-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      } else {
+        document.getElementById('results-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        if (!analyzed && health.geminiConfigured) analyzeImages()
+      }
+    }
+  }
+
   return (
     <div className="app-shell">
       <aside className={`sidebar ${mobileNavOpen ? 'sidebar-open' : ''}`}>
@@ -326,41 +353,60 @@ function App() {
           setError('')
           setMobileNavOpen(false)
         }}>
-          <span className="brand-mark"><Icon name="image" size={22} /></span>
-          <span className="brand-name">IMAGE<span>HUNTER</span><small>AI STUDIO</small></span>
+          <span className="brand-mark"><Icon name="scan" size={24} /></span>
+          <span className="brand-name"><strong>IMAGE HUNTER</strong><small>CREATIVE INTELLIGENCE</small></span>
         </a>
 
-        <div className="sidebar-label">ÇALIŞMA ALANI</div>
-        <button className="nav-item nav-active" type="button" onClick={() => setMobileNavOpen(false)}>
-          <Icon name="search" /><span>Görsel keşfet</span>
-        </button>
-        <button className="nav-item" type="button" onClick={() => {
-          document.getElementById('history-panel')?.scrollIntoView({ behavior: 'smooth' })
-          setMobileNavOpen(false)
-        }}>
-          <Icon name="clock" /><span>Arama geçmişi</span>
-          {history.length > 0 && <span className="nav-count">{history.length}</span>}
-        </button>
-
-        <div className="sidebar-divider" />
-        <div className="sidebar-label">SON ARAMALAR</div>
-        <div className="recent-list">
-          {history.length === 0 && <p className="empty-history">Aramalarınız burada görünecek.</p>}
-          {history.slice(0, 5).map((entry) => (
-            <button type="button" className="recent-item" key={`${entry.query}-${entry.time}`} onClick={() => openHistorySearch(entry)}>
-              <span className="recent-dot" />
-              <span className="recent-query">{entry.query}</span>
-              <span className="recent-count">{entry.count}</span>
-            </button>
-          ))}
+        <div className="sidebar-section">
+          <div className="sidebar-label">ÇALIŞMA ALANI</div>
+          <button className="nav-item nav-active" type="button" onClick={() => navigateToTool('search')}>
+            <span className="nav-icon"><Icon name="search" /></span><span>Görsel Avcısı</span>
+            <span className="nav-current">AKTİF</span>
+          </button>
+          <button className="nav-item" type="button" onClick={() => navigateToTool('analysis')}>
+            <span className="nav-icon"><Icon name="scan" /></span><span>Fotoğraf Analizi</span>
+            {photos.length > 0 && <span className="nav-count">{photos.length}</span>}
+          </button>
+          <div className="sidebar-label sidebar-label-spaced">YAKINDA</div>
+          <button className="nav-item nav-disabled" type="button" disabled title="Gelecekte geliştirilecek">
+            <span className="nav-icon"><Icon name="layers" /></span><span>Toplu Fotoğraf Analizi</span><span className="nav-soon">YAKINDA</span>
+          </button>
+          <button className="nav-item nav-disabled" type="button" disabled title="Gelecekte geliştirilecek">
+            <span className="nav-icon"><Icon name="wand" /></span><span>Fotoğraf İyileştirici</span><span className="nav-soon">YAKINDA</span>
+          </button>
+          <button className="nav-item nav-disabled" type="button" disabled title="Gelecekte geliştirilecek">
+            <span className="nav-icon"><Icon name="cut" /></span><span>Arka Plan Silici</span><span className="nav-soon">YAKINDA</span>
+          </button>
+          <button className="nav-item nav-disabled" type="button" disabled title="Gelecekte geliştirilecek">
+            <span className="nav-icon"><Icon name="play" /></span><span>Thumbnail Studio</span><span className="nav-soon">YAKINDA</span>
+          </button>
         </div>
 
-        <div className="sidebar-spacer" />
-        <div className="sidebar-note">
-          <span className="note-icon"><Icon name="shield" size={17} /></span>
-          <div><strong>Kaynakları koruyoruz</strong><p>Her görsel orijinal kaynağına bağlıdır.</p></div>
+        <div className="sidebar-history">
+          <div className="sidebar-label">SON ARAMALAR</div>
+          <div className="recent-list">
+            {history.length === 0 && <p className="empty-history">Aramalarınız burada görünecek.</p>}
+            {history.slice(0, 5).map((entry) => (
+              <button type="button" className="recent-item" key={`${entry.query}-${entry.time}`} onClick={() => openHistorySearch(entry)}>
+                <span className="recent-dot" />
+                <span className="recent-query">{entry.query}</span>
+                <span className="recent-count">{entry.count}</span>
+              </button>
+            ))}
+          </div>
+          {history.length > 0 && <button className="history-link" type="button" onClick={() => {
+            document.getElementById('history-panel')?.scrollIntoView({ behavior: 'smooth' })
+            setMobileNavOpen(false)
+          }}><Icon name="clock" size={14} /> Tüm geçmiş <Icon name="arrow" size={13} /></button>}
         </div>
-        <div className="sidebar-footer">IMAGE HUNTER AI <span>v1.0</span></div>
+
+        <div className="sidebar-bottom">
+          <div className="sidebar-note">
+            <span className="note-icon"><Icon name="shield" size={17} /></span>
+            <div><strong>Kaynağıyla birlikte</strong><p>Her görsel orijinal kaynağına bağlı.</p></div>
+          </div>
+          <div className="sidebar-footer"><span className="footer-orb" /> SYSTEM STATUS <span>v1.0</span></div>
+        </div>
       </aside>
 
       {mobileNavOpen && <button className="nav-backdrop" aria-label="Menüyü kapat" onClick={() => setMobileNavOpen(false)} />}
@@ -368,77 +414,89 @@ function App() {
       <main className="main-area">
         <header className="topbar">
           <button type="button" className="mobile-menu" aria-label="Menüyü aç" onClick={() => setMobileNavOpen(true)}><Icon name="menu" /></button>
-          <div className="breadcrumb"><span>Image Hunter</span><b>/</b><strong>Görsel keşfet</strong></div>
+          <div className="breadcrumb"><span>CREATIVE WORKSPACE</span><b>/</b><strong>Görsel Avcısı</strong></div>
           <div className="service-status">
             <span className={`status-pill ${health.searchConfigured ? 'status-ready' : ''}`} title={health.searchConfigured ? 'SerpApi bağlantısı hazır' : 'SerpApi anahtarı gerekli'}>
-              <i /> GOOGLE {health.searchConfigured ? 'BAĞLI' : 'ANAHTAR GEREKLİ'}
+              <i /> SERPAPI {health.searchConfigured ? 'BAĞLI' : 'BEKLENİYOR'}
             </span>
             <span className={`status-pill ${health.geminiConfigured ? 'status-ready' : ''}`} title={health.geminiConfigured ? 'Gemini bağlantısı hazır' : 'Gemini API anahtarı gerekli'}>
-              <i /> GEMINI {health.geminiConfigured ? 'BAĞLI' : 'ANAHTAR GEREKLİ'}
+              <i /> GEMINI {health.geminiConfigured ? 'BAĞLI' : 'BEKLENİYOR'}
             </span>
           </div>
         </header>
 
         <div className="content">
-          <section className="hero-section">
-            <div className="eyebrow"><span className="eyebrow-line" /> YARATICI İŞ AKIŞINIZ İÇİN <span className="eyebrow-line" /></div>
-            <h1>Aradığını bul.<br /><span>En iyisini seç.</span></h1>
-            <p className="hero-copy">Gerçek görselleri keşfet, Gemini ile analiz et ve projen için en doğru kareleri saniyeler içinde bul.</p>
+          <section className="hero-section" id="search-panel">
+            <div className="hero-top">
+              <div className="hero-copy-block">
+                <div className="eyebrow"><span className="eyebrow-dot" /> AI DESTEKLİ GÖRSEL KEŞFİ</div>
+                <h1>Aradığın kare,<br /><span>doğru ışıkta.</span></h1>
+                <p className="hero-copy">Binlerce görsel arasından doğru kişiyi bul. Yapay zekâ ile doğrula, estetik puanla ve en iyilerini tek yerde topla.</p>
+                <div className="hero-trust"><span><Icon name="check" size={13} /> Tek kişi doğrulama</span><span><Icon name="check" size={13} /> AI kalite puanı</span><span><Icon name="check" size={13} /> Kaynak bilgisi korunur</span></div>
+              </div>
+              <div className="hero-visual" aria-hidden="true">
+                <div className="hero-glow" />
+                <div className="hero-orbit orbit-a" /><div className="hero-orbit orbit-b" />
+                <div className="hero-scan-card">
+                  <div className="scan-card-head"><span className="scan-indicator" /> SUBJECT VERIFIED <Icon name="scan" size={16} /></div>
+                  <div className="scan-portrait"><div className="portrait-halo" /><div className="portrait-head" /><div className="portrait-body" /><span className="scan-corner corner-tl" /><span className="scan-corner corner-tr" /><span className="scan-corner corner-bl" /><span className="scan-corner corner-br" /></div>
+                  <div className="scan-card-foot"><span>ESTHETIC SCORE</span><strong>94<span>/100</span></strong></div>
+                </div>
+                <div className="hero-float-tag"><Icon name="sparkle" size={14} /> AI RANKING</div>
+              </div>
+            </div>
 
             <form className="search-form" onSubmit={(event) => {
               event.preventDefault()
               searchImages()
             }}>
-              <Icon name="search" size={21} />
+              <span className="search-form-icon"><Icon name="search" size={21} /></span>
               <input
+                id="image-query"
                 type="search"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Örn. gün batımında Tokyo, Cristiano Ronaldo..."
+                placeholder="Bir kişi, sanatçı veya ünlü ara..."
                 aria-label="Görsel arama"
                 maxLength={120}
               />
               {query && <button className="clear-search" type="button" aria-label="Aramayı temizle" onClick={() => setQuery('')}><Icon name="close" size={16} /></button>}
               <button className="search-button" type="submit" disabled={loading || analyzing}>
-                {loading ? <span className="button-spinner" /> : <><span>Görselleri bul</span><Icon name="arrow" size={16} /></>}
+                {loading ? <span className="button-spinner" /> : <><span>Görselleri keşfet</span><Icon name="arrow" size={16} /></>}
               </button>
             </form>
 
             <div className="search-options">
-              <label className="select-control"><span>HEDEF</span>
-                <select value={count} onChange={(event) => setCount(Number(event.target.value))} disabled={loading || analyzing || photos.length > 0}>
-                  <option value="20">En iyi 20</option><option value="100">En iyi 100</option>
-                </select>
-              </label>
-              <span className="search-powered">İlk adaylar: seçilen hedef kadar <b>·</b> Ek arama yalnızca gerekirse</span>
+              <span className="result-count-label">SONUÇ HEDEFİ</span>
+              <div className="count-switch" role="group" aria-label="Otomatik seçilecek fotoğraf sayısı">
+                {[20, 100].map((target) => <button key={target} type="button" className={count === target ? 'count-active' : ''} onClick={() => setCount(target)} disabled={loading || analyzing || photos.length > 0}>{target}<span> fotoğraf</span></button>)}
+              </div>
+              <span className="search-powered"><span className="powered-dot" /> İlk arama hedef kadar aday getirir; ek arama yalnızca gerekirse.</span>
             </div>
+
             <details className="aesthetic-criteria">
-              <summary><Icon name="sparkle" size={14} /> AI Aesthetic Ranking · Puanlama kriterleri</summary>
+              <summary><Icon name="sparkle" size={15} /> Puanlama ve doğrulama ölçütleri <span>Detayları gör</span></summary>
               <div className="criteria-content">
-                <p>Gemini öncesinde URL, erişim, en az 300 px kısa kenar ve 120.000 toplam piksel çözünürlük ile benzer kopyalar kontrol edilir. Yalnızca geçen benzersiz görseller analiz edilir. Genel puan ağırlıklı ortalamadır:</p>
+                <p>Gemini öncesinde URL, erişim, çözünürlük ve benzer kopyalar kontrol edilir. Tam bir kişi, doğrulanmış kimlik ve görünür/tanınabilir yüz zorunludur. Yalnızca filtreyi geçen farklı fotoğraflar puanlanır:</p>
                 <ul>
-                  <li><span>Arama alaka düzeyi</span><b>%15</b></li>
-                  <li><span>Netlik</span><b>%15</b></li>
-                  <li><span>Çözünürlük</span><b>%10</b></li>
-                  <li><span>Işık</span><b>%15</b></li>
-                  <li><span>Renk uyumu</span><b>%10</b></li>
-                  <li><span>Kompozisyon</span><b>%15</b></li>
-                  <li><span>Kadraj / çerçeveleme</span><b>%10</b></li>
-                  <li><span>Edit uygunluğu</span><b>%10</b></li>
+                  <li><span>Arama alaka düzeyi</span><b>%15</b></li><li><span>Netlik</span><b>%15</b></li>
+                  <li><span>Çözünürlük</span><b>%10</b></li><li><span>Işık</span><b>%15</b></li>
+                  <li><span>Renk uyumu</span><b>%10</b></li><li><span>Kompozisyon</span><b>%15</b></li>
+                  <li><span>Kadraj / çerçeveleme</span><b>%10</b></li><li><span>Edit uygunluğu</span><b>%10</b></li>
                 </ul>
-                <p className="criteria-gate">Zorunlu kişi filtresi: fotoğrafta tam 1 insan, doğru kimlik (güven en az %70) ve görünür/tanınabilir yüz. Bu koşulları geçemeyenlere estetik puan verilmez ve seçilemez; grup fotoğrafı hiçbir zaman eksik sayıyı doldurmaz. Otomatik seçim ayrıca en az 45/100 puan ister. Benzer görseller ve önbellekteki analizler yeniden Gemini isteği oluşturmaz.</p>
+                <p className="criteria-gate">Grup fotoğrafları ve eşleşmeyen kişiler seçime eklenmez. Yeterli fotoğraf yoksa bulunan gerçek sayı gösterilir. Önbellek ve kopya kontrolü gereksiz Gemini çağrılarını azaltır.</p>
               </div>
             </details>
-            <div className="suggestions">
-              <span>ÖRNEKLER</span>
-              {['Anime edit', 'Gece şehir ışıkları', 'Futbol aksiyonu'].map((suggestion) => (
-                <button key={suggestion} type="button" onClick={() => {
-                  setQuery(suggestion)
-                  searchImages(suggestion)
-                }}>{suggestion}</button>
-              ))}
-            </div>
           </section>
+
+          {!photos.length && !loading && <section className="value-section" aria-label="Image Hunter özellikleri">
+            <div className="value-heading"><div><span className="section-kicker">DAHA İYİ FOTOĞRAFLAR, DAHA AZ UĞRAŞ</span><h2>Aramadan seçime, <span>akıllı iş akışı.</span></h2></div><p>Her görseli kaynağıyla bul, doğru kişiyi doğrula ve kaliteye göre sırala.</p></div>
+            <div className="value-grid">
+              <article className="value-card"><span className="value-icon icon-blue"><Icon name="search" size={19} /></span><span className="value-step">01 / DISCOVER</span><h3>Kaynağından keşfet</h3><p>Google Görseller sonuçlarını doğrudan kaynakları ve çözünürlük bilgileriyle incele.</p><span className="value-link">SerpApi ile arama <Icon name="arrow" size={13} /></span></article>
+              <article className="value-card"><span className="value-icon icon-cyan"><Icon name="scan" size={19} /></span><span className="value-step">02 / VERIFY</span><h3>Tek kişiyi doğrula</h3><p>Grup fotoğraflarını ele. Aradığın kişinin yüzü görünür ve tanınabilir olsun.</p><span className="value-link">Gemini kişi analizi <Icon name="arrow" size={13} /></span></article>
+              <article className="value-card"><span className="value-icon icon-violet"><Icon name="sparkle" size={19} /></span><span className="value-step">03 / RANK</span><h3>Kaliteye göre sırala</h3><p>Işık, netlik, renk ve kompozisyon puanıyla en iyi fotoğraflarını seç.</p><span className="value-link">AI estetik puanı <Icon name="arrow" size={13} /></span></article>
+            </div>
+          </section>}
 
           {error && <div className="error-banner" role="alert"><span>!</span><p>{error}</p><button type="button" aria-label="Uyarıyı kapat" onClick={() => setError('')}><Icon name="close" size={16} /></button></div>}
 
@@ -455,19 +513,22 @@ function App() {
           )}
 
           {(loading || photos.length > 0) && (
-            <section className="results-section" aria-live="polite">
+            <section className="results-section" id="results-panel" aria-live="polite">
               <div className="results-heading">
                 <div>
-                  <div className="section-kicker">KEŞİF SONUÇLARI</div>
-                  <h2>{loading ? 'Görseller bulunuyor…' : <>{photos.length} <span>görsel bulundu</span></>}</h2>
+                  <div className="section-kicker">GÖRSEL KOLEKSİYONU</div>
+                  <h2>{loading ? 'En iyi kareleri arıyoruz…' : <>Sonuçlar <span>· {photos.length} fotoğraf</span></>}</h2>
+                  <p className="results-caption">{analyzed
+                    ? `${photos.filter((photo) => photo.autoSelected).length} / ${count} uygun fotoğraf bulundu · yalnızca doğrulanan kişiler`
+                    : 'Fotoğrafları AI ile doğrula ve en yüksek kalite puanlarını bul.'}</p>
                 </div>
                 {photos.length > 0 && <div className="results-controls">
                   <button type="button" className="text-button" onClick={toggleAll}>
-                    <span className={`checkbox-mini ${selectedPhotos.length === photos.length ? 'checked' : ''}`}>{selectedPhotos.length === photos.length && <Icon name="check" size={12} />}</span>
-                    {selectedPhotos.length > 0 && selectedPhotos.length === photos.filter(isSelectablePhoto).length ? 'Seçimi kaldır' : 'Doğrulananları seç'}
+                    <span className={`checkbox-mini ${allPhotosSelected ? 'checked' : ''}`}>{allPhotosSelected && <Icon name="check" size={12} />}</span>
+                    {selectedPhotos.length > 0 && selectedPhotos.length === photos.filter(isSelectablePhoto).length ? 'Seçimi kaldır' : 'Uygunları seç'}
                   </button>
                   <button type="button" className="outline-button" disabled={analyzing || !health.geminiConfigured} onClick={analyzed ? selectBest : analyzeImages} title={!health.geminiConfigured ? 'Gemini API anahtarı gerekli' : ''}>
-                    <Icon name="sparkle" size={16} /> {analyzed ? 'En iyileri seç' : 'AI ile analiz et'}
+                    <Icon name="sparkle" size={16} /> {analyzed ? 'En iyileri seç' : 'Fotoğrafları analiz et'}
                   </button>
                   <button type="button" className="primary-button" disabled={!selectedPhotos.length || downloading} onClick={downloadZip}>
                     {downloading ? <span className="button-spinner" /> : <Icon name="download" size={16} />}
@@ -501,7 +562,7 @@ function App() {
                   </div>
                   <div className="photo-meta">
                     <p className="photo-title" title={photo.alt}>{photo.alt || 'Başlıksız görsel'}</p>
-                    <div className="photo-byline"><span>{photo.width && photo.height ? `${photo.width} × ${photo.height}` : 'Google Görseller'}</span><span className="meta-dot" /> <span>{photo.sourceName || photo.photographer}</span></div>
+                    <div className="photo-byline"><span>{photo.width && photo.height ? `${photo.width} × ${photo.height}` : 'Google Görseller'}</span><span className="meta-dot" /><span>{photo.sourceName || photo.photographer}</span></div>
                     {photo.score !== undefined && <div className="card-analysis">
                       {photo.analysisError ? <span className="analysis-failed">Analiz edilemedi: {photo.analysisError}</span> : <>
                         <div className="quality-bar"><span style={{ width: `${photo.score}%` }} /></div>
@@ -525,17 +586,10 @@ function App() {
 
           {!loading && photos.length === 0 && !error && (
             <section className="empty-state">
-              <div className="empty-art">
-                <div className="art-glow" />
-                <div className="art-back art-card-one"><span /><i /><b /></div>
-                <div className="art-back art-card-two"><span /><i /></div>
-                <div className="art-main"><div className="art-sun" /><div className="art-mountain mountain-one" /><div className="art-mountain mountain-two" /><div className="art-water" /><span className="art-scan"><Icon name="sparkle" size={18} /></span></div>
-                <div className="art-orbit orbit-one" /><div className="art-orbit orbit-two" />
-              </div>
-              <span className="empty-label"><Icon name="sparkle" size={13} /> İLHAMINI KEŞFET</span>
-              <h2>Fikrini görsele dönüştür.</h2>
-              <p>Bir konu ara; gerçek görselleri bul, yapay zekâ ile değerlendir ve en iyilerini seç.</p>
-              <div className="empty-features"><span><i />Gerçek kaynaklar</span><span><i />AI ile puanlama</span><span><i />Tek tıkla ZIP</span></div>
+              <span className="empty-icon"><Icon name="search" size={22} /></span>
+              <span className="empty-label">İLK ADIM SENDE</span>
+              <h2>Bir isimle başla.</h2>
+              <p>Aradığın kişiyi yaz. Görselleri bulalım, kimliği doğrulayalım ve en iyi kareleri senin için sıralayalım.</p>
             </section>
           )}
 
