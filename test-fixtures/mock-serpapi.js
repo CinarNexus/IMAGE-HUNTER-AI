@@ -14,6 +14,7 @@ const personFilterImages = Object.fromEntries(await Promise.all(
     ['background-people', { r: 30, g: 210, b: 80 }],
     ['crowd', { r: 30, g: 80, b: 210 }],
     ['uncertain', { r: 210, g: 210, b: 30 }],
+    ['uncertain-identity', { r: 210, g: 210, b: 80 }],
     ['wrong-person', { r: 30, g: 40, b: 210 }],
     ['hidden-face', { r: 210, g: 180, b: 30 }],
     ['female-celebrity', { r: 210, g: 30, b: 190 }],
@@ -34,7 +35,7 @@ globalThis.fetch = async (input, options) => {
       return new Response(smallImage, { headers: { 'Content-Type': 'image/png' } })
     }
     if (url.pathname === '/broken.png') return new Response('', { status: 404 })
-    const scenario = url.pathname.match(/^\/person-(single|group|two-people|background-people|crowd|uncertain|wrong-person|hidden-face|female-celebrity|male-celebrity)\.png$/)?.[1]
+    const scenario = url.pathname.match(/^\/person-(single|group|two-people|background-people|crowd|uncertain|uncertain-identity|wrong-person|hidden-face|female-celebrity|male-celebrity)\.png$/)?.[1]
     if (scenario) return new Response(personFilterImages[scenario], { headers: { 'Content-Type': 'image/png' } })
     return new Response(testImage, { headers: { 'Content-Type': 'image/png' } })
   }
@@ -47,7 +48,7 @@ globalThis.fetch = async (input, options) => {
     const requestBody = typeof options?.body === 'string'
       ? options.body
       : JSON.stringify(options?.body || {})
-    const scenario = ['group', 'two-people', 'background-people', 'crowd', 'uncertain', 'wrong-person', 'hidden-face', 'female-celebrity', 'male-celebrity']
+    const scenario = ['group', 'two-people', 'background-people', 'crowd', 'uncertain-identity', 'uncertain', 'wrong-person', 'hidden-face', 'female-celebrity', 'male-celebrity']
       .find((name) => requestBody.includes(`TEST_PERSON_FILTER: ${name}`))
     const expectedTarget = scenario === 'female-celebrity'
       ? 'Taylor Swift'
@@ -63,6 +64,8 @@ globalThis.fetch = async (input, options) => {
         ? { personCount: 8, personCountConfidence: 99, subjectMatch: 'match', faceVisible: true, faceRecognizable: true, reason: 'Fotoğrafta kalabalık var.' }
         : scenario === 'uncertain'
           ? { personCount: 1, personCountConfidence: 52, subjectMatch: 'match', faceVisible: true, faceRecognizable: true, reason: 'Arka plan nedeniyle kişi sayısı belirsiz.' }
+          : scenario === 'uncertain-identity'
+            ? { personCount: 1, personCountConfidence: 99, subjectMatch: 'uncertain', subjectConfidence: 52, faceVisible: true, faceRecognizable: true, reason: 'Aranan kişinin kimliği belirsiz.' }
           : scenario === 'wrong-person'
         ? { personCount: 1, subjectMatch: 'mismatch', faceVisible: true, faceRecognizable: true, reason: 'Fotoğraftaki kişi aranan kişi değil.' }
         : scenario === 'hidden-face'
@@ -104,17 +107,40 @@ globalThis.fetch = async (input, options) => {
 
   const query = url.searchParams.get('q')
   const page = Number(url.searchParams.get('ijn')) || 0
-  const images_results = Array.from({ length: 100 }, (_, index) => ({
-    title: `${query} image ${page * 100 + index + 1}`,
-    source: 'Test image source',
-    original: `https://8.8.8.8/${page * 100 + index + 1}.png`,
-    thumbnail: `https://encrypted-tbn0.gstatic.com/images?image=${page * 100 + index + 1}`,
-    link: `https://source.example.com/image/${page * 100 + index + 1}`,
-    original_width: 1920,
-    original_height: 1080,
-  }))
+  const personScenarios = [
+    'single',
+    'group',
+    'two-people',
+    'background-people',
+    'crowd',
+    'uncertain',
+    'uncertain-identity',
+    'wrong-person',
+    'hidden-face',
+  ]
+  const images_results = query === 'TEST_PERSON_FILTER'
+    ? personScenarios.map((scenario) => ({
+      title: `TEST_PERSON_FILTER: ${scenario}`,
+      source: 'Test person filter source',
+      original: `https://8.8.8.8/person-${scenario}.png`,
+      thumbnail: `https://8.8.8.8/person-${scenario}.png`,
+      link: `https://source.example.com/${scenario}`,
+      original_width: 1920,
+      original_height: 1080,
+    }))
+    : Array.from({ length: 100 }, (_, index) => ({
+      title: `${query} image ${page * 100 + index + 1}`,
+      source: 'Test image source',
+      original: `https://8.8.8.8/${page * 100 + index + 1}.png`,
+      thumbnail: `https://encrypted-tbn0.gstatic.com/images?image=${page * 100 + index + 1}`,
+      link: `https://source.example.com/image/${page * 100 + index + 1}`,
+      original_width: 1920,
+      original_height: 1080,
+    }))
 
-  const serpapi_pagination = page < 1 ? { next: 'https://serpapi.com/search.json?ijn=1' } : {}
+  const serpapi_pagination = query !== 'TEST_PERSON_FILTER' && page < 1
+    ? { next: 'https://serpapi.com/search.json?ijn=1' }
+    : {}
   return new Response(JSON.stringify({ images_results, serpapi_pagination }), {
     headers: { 'Content-Type': 'application/json' },
   })

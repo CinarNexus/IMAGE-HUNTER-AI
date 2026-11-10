@@ -10,9 +10,9 @@ import sharp from 'sharp'
 import { ZipFile } from 'yazl'
 import {
   calculateAestheticScore,
-  isPersonEligible,
   rankAestheticPhotos,
 } from './aesthetic.js'
+import { getPersonEligibilityReason, isPersonEligible } from '../shared/person-eligibility.js'
 
 const root = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(root, '..')
@@ -29,7 +29,10 @@ const maxImageBytes = 15 * 1024 * 1024
 const maxPreparedImageBytes = 48 * 1024 * 1024
 const analysisCacheTtl = 30 * 60 * 1000
 const maxAnalysisCacheEntries = 1000
+const maxSearchSessions = 100
+const searchSessionTtl = 60 * 60 * 1000
 const jobs = new Map()
+const searchSessions = new Map()
 const analysisCache = new Map()
 const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null
 
@@ -102,6 +105,24 @@ function photoFromGoogleResult(result) {
     analysisUrl: imageUrl,
     license: 'Lisans bilgisi belirtilmemiş',
     licenseUrl: result.link,
+  }
+}
+
+function getSearchSession(searchId, query) {
+  const session = searchSessions.get(searchId)
+  if (!session || session.expiresAt <= Date.now() || session.query !== query) return null
+  session.expiresAt = Date.now() + searchSessionTtl
+  return session
+}
+
+function pruneSearchSessions(now = Date.now()) {
+  for (const [id, session] of searchSessions) {
+    if (session.expiresAt <= now) searchSessions.delete(id)
+  }
+  while (searchSessions.size >= maxSearchSessions) {
+    const oldestId = searchSessions.keys().next().value
+    if (!oldestId) break
+    searchSessions.delete(oldestId)
   }
 }
 
@@ -422,7 +443,12 @@ async function runAnalysis(job) {
     })
   }
 
-  job.photos = rankAestheticPhotos(job.results, job.bestCount)
+  job.photos = rankAestheticPhotos(job.results, job.bestCount).map((photo) => ({
+    ...photo,
+    aiVerified: isPersonEligible(photo),
+    aiVerificationReason: getPersonEligibilityReason(photo)
+      || 'Tek kişi, aranan kimlik ve yeterince görünür yüz AI tarafından doğrulandı.',
+  }))
   job.failed = job.photos.filter((photo) => photo.analysisError).length
   job.autoSelected = job.photos.filter((photo) => photo.autoSelected).length
   job.status = 'completed'
@@ -446,6 +472,7 @@ app.get('/api/search', async (request, response, next) => {
     const query = typeof request.query.query === 'string' ? request.query.query.trim() : ''
     const count = Number(request.query.count)
     const page = request.query.page === undefined ? 0 : Number(request.query.page)
+    const requestedSearchId = typeof request.query.searchId === 'string' ? request.query.searchId : ''
     if (query.length < 2 || query.length > 120) {
       return response.status(400).json({ error: 'Arama metni 2-120 karakter arasında olmalı.' })
     }
@@ -454,6 +481,13 @@ app.get('/api/search', async (request, response, next) => {
     }
     if (!Number.isInteger(page) || page < 0 || page > 99) {
       return response.status(400).json({ error: 'Arama sayfası 0-99 arasında olmalı.' })
+    }
+    pruneSearchSessions()
+    if (requestedSearchId && page === 0) {
+      return response.status(400).json({ error: 'Yeni arama için searchId gönderilemez.' })
+    }
+    if (requestedSearchId && !getSearchSession(requestedSearchId, query)) {
+      return response.status(400).json({ error: 'Arama oturumu geçersiz, süresi dolmuş veya sorguyla eşleşmiyor.' })
     }
 
     const url = new URL('https://serpapi.com/search.json')
@@ -483,9 +517,26 @@ app.get('/api/search', async (request, response, next) => {
       .map(photoFromGoogleResult)
       .filter(Boolean)
       .slice(0, count)
+    let searchId = requestedSearchId
+    if (!searchId) {
+      pruneSearchSessions()
+      searchId = randomUUID()
+      searchSessions.set(searchId, {
+        query,
+        photos: new Map(),
+        expiresAt: Date.now() + searchSessionTtl,
+      })
+    }
+    const session = searchSessions.get(searchId)
+    if (session.photos.size + photos.filter((photo) => !session.photos.has(photo.id)).length > maxAnalysisImages) {
+      return response.status(400).json({ error: `Bir arama oturumunda en fazla ${maxAnalysisImages} görsel indirilebilir.` })
+    }
+    for (const photo of photos) session.photos.set(photo.id, photo)
+    session.expiresAt = Date.now() + searchSessionTtl
     const pagination = data.serpapi_pagination || {}
     return response.json({
       query,
+      searchId,
       photos,
       total: photos.length,
       page,
@@ -590,29 +641,23 @@ app.get('/api/jobs/:id', (request, response) => {
 })
 
 app.post('/api/download', async (request, response) => {
-  const { jobId, photoIds } = request.body || {}
-  if (typeof jobId !== 'string' || !Array.isArray(photoIds) || photoIds.length < 1 || photoIds.length > maxImages) {
+  const { searchId, photoIds } = request.body || {}
+  if (typeof searchId !== 'string' || !Array.isArray(photoIds) || photoIds.length < 1 || photoIds.length > maxImages) {
     return response.status(400).json({ error: `ZIP için 1-${maxImages} arası görsel seçin.` })
   }
   if (photoIds.some((id) => typeof id !== 'string') || new Set(photoIds).size !== photoIds.length) {
     return response.status(400).json({ error: 'ZIP görsel seçimleri geçersiz.' })
   }
-  const job = jobs.get(jobId)
-  if (!job || job.status !== 'completed') {
-    return response.status(400).json({ error: 'ZIP için tamamlanmış bir AI analiz işi gerekli.' })
-  }
-  const verifiedPhotos = new Map(job.photos
-    .filter((photo) => (
-      !photo.duplicateOf
-      && isPersonEligible(photo)
-      && typeof photo.score === 'number'
-    ))
-    .map((photo) => [photo.id, photo]))
-  if (photoIds.some((id) => !verifiedPhotos.has(id))) {
-    return response.status(400).json({ error: 'ZIP yalnızca tek kişi olduğu doğrulanmış ve puanlanmış görselleri içerebilir.' })
+  const search = getSearchSession(searchId, searchSessions.get(searchId)?.query)
+  if (!search) {
+    return response.status(400).json({ error: 'ZIP için geçerli ve süresi dolmamış arama oturumu gerekli.' })
   }
 
-  const cleanPhotos = photoIds.map((id) => verifiedPhotos.get(id)).map((photo) => ({
+  if (photoIds.some((id) => !search.photos.has(id))) {
+    return response.status(400).json({ error: 'ZIP yalnızca bu arama oturumunda bulunan görselleri içerebilir.' })
+  }
+
+  const cleanPhotos = photoIds.map((id) => search.photos.get(id)).map((photo) => ({
     id: String(photo.id || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40),
     imageUrl: photo.imageUrl,
     sourceUrl: photo.sourceUrl,

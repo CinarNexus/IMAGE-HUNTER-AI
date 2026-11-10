@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { isPersonEligible } from '../shared/person-eligibility.js'
+import { getPersonEligibilityReason } from '../shared/person-eligibility.js'
 import './App.css'
 
 const HISTORY_KEY = 'image-hunter-history'
@@ -50,6 +50,7 @@ function App() {
   const [count, setCount] = useState(20)
   const [photos, setPhotos] = useState([])
   const [analysisJobId, setAnalysisJobId] = useState('')
+  const [searchId, setSearchId] = useState('')
   const [searchHasMore, setSearchHasMore] = useState(false)
   const [searchPage, setSearchPage] = useState(0)
   const [history, setHistory] = useState(() => {
@@ -93,13 +94,9 @@ function App() {
   }, [notice])
 
   const selectedPhotos = photos.filter((photo) => photo.selected)
+  const currentDetailPhoto = photos.find((photo) => photo.id === detailPhoto?.id) || detailPhoto
   const analyzed = Boolean(analysisJobId)
-  const isSelectablePhoto = (photo) => (
-    !photo.duplicateOf
-    && isPersonEligible(photo)
-    && typeof photo.score === 'number'
-  )
-  const selectablePhotos = analyzed ? photos.filter(isSelectablePhoto) : photos
+  const selectablePhotos = photos
   const allPhotosSelected = selectablePhotos.length > 0
     && selectablePhotos.every((photo) => photo.selected)
   const visiblePhotos = photos.filter((photo) => {
@@ -124,6 +121,7 @@ function App() {
     setError('')
     setPhotos([])
     setAnalysisJobId('')
+    setSearchId('')
     setSearchHasMore(false)
     setSearchPage(0)
     setActiveFilter('all')
@@ -137,6 +135,7 @@ function App() {
       if (!items.length && data.hasMore) {
         page = 1
         params.set('page', String(page))
+        params.set('searchId', data.searchId)
         response = await fetch(`/api/search?${params}`)
         data = await response.json()
         if (!response.ok) throw new Error(data.error || 'Ek görseller aranırken bir hata oluştu.')
@@ -144,6 +143,7 @@ function App() {
       }
       items = items.map((photo) => ({ ...photo, selected: false }))
       setPhotos(items)
+      setSearchId(data.searchId)
       setSearchHasMore(data.hasMore)
       setSearchPage(page)
       setHistory((previous) => [
@@ -172,6 +172,7 @@ function App() {
       let page = searchPage
       let hasMore = searchHasMore
       let finalStatus
+      const selectedIds = new Set(photos.filter((photo) => photo.selected).map((photo) => photo.id))
 
       while (true) {
         const response = await fetch('/api/analyze', {
@@ -201,7 +202,15 @@ function App() {
           if (statusData.status === 'completed') {
             finalStatus = statusData
             setAnalysisJobId(data.jobId)
-            setPhotos(statusData.photos)
+            const analyzedPhotos = statusData.photos.map((photo) => ({
+              ...photo,
+              selected: Boolean(photo.autoSelected) || selectedIds.has(photo.id),
+            }))
+            for (const photo of analyzedPhotos) {
+              if (photo.selected) selectedIds.add(photo.id)
+            }
+            candidates = analyzedPhotos
+            setPhotos(analyzedPhotos)
             break
           }
           await new Promise((resolve) => {
@@ -213,7 +222,7 @@ function App() {
 
         page += 1
         setProgress({ completed: 0, prepared: 0, total: count, stage: 'searching' })
-        const params = new URLSearchParams({ query, count: String(count), page: String(page) })
+        const params = new URLSearchParams({ query, count: String(count), page: String(page), searchId })
         const nextResponse = await fetch(`/api/search?${params}`)
         const nextData = await nextResponse.json()
         if (!nextResponse.ok) throw new Error(nextData.error || 'Ek görseller aranırken bir hata oluştu.')
@@ -247,22 +256,16 @@ function App() {
   }
 
   function togglePhoto(id) {
-    const photo = photos.find((item) => item.id === id)
-    if (analyzed && photo && !isSelectablePhoto(photo)) {
-      setError('Yalnızca tek kişinin yüzü görünür, tanınabilir ve kimliği doğrulanmış fotoğraflar seçilebilir.')
-      return
-    }
     setPhotos((items) => items.map((photo) => (
       photo.id === id ? { ...photo, selected: !photo.selected } : photo
     )))
   }
 
   function toggleAll() {
-    const selectablePhotos = analyzed ? photos.filter(isSelectablePhoto) : photos
     const shouldSelect = selectablePhotos.some((photo) => !photo.selected)
     setPhotos((items) => items.map((photo) => ({
       ...photo,
-      selected: shouldSelect && (!analyzed || isSelectablePhoto(photo)),
+      selected: shouldSelect,
     })))
   }
 
@@ -276,11 +279,7 @@ function App() {
   }
 
   async function downloadZip() {
-    if (!analyzed) {
-      setError('ZIP indirmeden önce AI ile kişi sayısını, kimliği ve yüz görünürlüğünü doğrulayın.')
-      return
-    }
-    if (!analysisJobId || !selectedPhotos.length) {
+    if (!searchId || !selectedPhotos.length) {
       setError('ZIP indirmek için en az bir görsel seçin.')
       return
     }
@@ -291,7 +290,7 @@ function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          jobId: analysisJobId,
+          searchId,
           photoIds: selectedPhotos.map(({ id }) => id),
         }),
       })
@@ -330,14 +329,22 @@ function App() {
       document.querySelector('#image-query')?.focus({ preventScroll: true })
       return
     }
-    if (tool === 'analysis') {
-      if (!photos.length) {
-        setNotice('Önce Görsel Avcısı ile fotoğraf arayın.')
-        document.getElementById('search-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      } else {
-        document.getElementById('results-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-        if (!analyzed && health.geminiConfigured) analyzeImages()
-      }
+    if (!photos.length) {
+      setNotice(tool === 'downloads'
+        ? 'İndirme için önce fotoğraf bulup doğrulayın.'
+        : 'Koleksiyon oluşturmak için önce fotoğraf bulun.')
+      document.getElementById('search-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      return
+    }
+
+    document.getElementById('results-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    if (tool === 'collection') {
+      setActiveFilter(selectedPhotos.length ? 'selected' : 'all')
+      return
+    }
+    if (tool === 'downloads') {
+      if (!selectedPhotos.length) setNotice('İndirmeden önce koleksiyonunuzdan fotoğraf seçin.')
+      window.setTimeout(() => document.getElementById('download-selected')?.focus({ preventScroll: true }), 0)
     }
   }
 
@@ -348,6 +355,7 @@ function App() {
           event.preventDefault()
           setPhotos([])
           setAnalysisJobId('')
+          setSearchId('')
           setError('')
           setMobileNavOpen(false)
         }}>
@@ -358,25 +366,15 @@ function App() {
         <div className="sidebar-section">
           <div className="sidebar-label">ÇALIŞMA ALANI</div>
           <button className="nav-item nav-active" type="button" onClick={() => navigateToTool('search')}>
-            <span className="nav-icon"><Icon name="search" /></span><span>Görsel Avcısı</span>
+            <span className="nav-icon"><Icon name="search" /></span><span>AI Görsel Bulucu</span>
             <span className="nav-current">AKTİF</span>
           </button>
-          <button className="nav-item" type="button" onClick={() => navigateToTool('analysis')}>
-            <span className="nav-icon"><Icon name="scan" /></span><span>Fotoğraf Analizi</span>
-            {photos.length > 0 && <span className="nav-count">{photos.length}</span>}
+          <button className="nav-item" type="button" onClick={() => navigateToTool('collection')}>
+            <span className="nav-icon"><Icon name="layers" /></span><span>Görsel Koleksiyonlarım</span>
+            {selectedPhotos.length > 0 && <span className="nav-count">{selectedPhotos.length}</span>}
           </button>
-          <div className="sidebar-label sidebar-label-spaced">YAKINDA</div>
-          <button className="nav-item nav-disabled" type="button" disabled title="Gelecekte geliştirilecek">
-            <span className="nav-icon"><Icon name="layers" /></span><span>Toplu Fotoğraf Analizi</span><span className="nav-soon">YAKINDA</span>
-          </button>
-          <button className="nav-item nav-disabled" type="button" disabled title="Gelecekte geliştirilecek">
-            <span className="nav-icon"><Icon name="wand" /></span><span>Fotoğraf İyileştirici</span><span className="nav-soon">YAKINDA</span>
-          </button>
-          <button className="nav-item nav-disabled" type="button" disabled title="Gelecekte geliştirilecek">
-            <span className="nav-icon"><Icon name="cut" /></span><span>Arka Plan Silici</span><span className="nav-soon">YAKINDA</span>
-          </button>
-          <button className="nav-item nav-disabled" type="button" disabled title="Gelecekte geliştirilecek">
-            <span className="nav-icon"><Icon name="play" /></span><span>Thumbnail Studio</span><span className="nav-soon">YAKINDA</span>
+          <button className="nav-item" type="button" onClick={() => navigateToTool('downloads')}>
+            <span className="nav-icon"><Icon name="download" /></span><span>İndirmelerim</span>
           </button>
         </div>
 
@@ -523,12 +521,12 @@ function App() {
                 {photos.length > 0 && <div className="results-controls">
                   <button type="button" className="text-button" onClick={toggleAll}>
                     <span className={`checkbox-mini ${allPhotosSelected ? 'checked' : ''}`}>{allPhotosSelected && <Icon name="check" size={12} />}</span>
-                    {selectedPhotos.length > 0 && selectedPhotos.length === photos.filter(isSelectablePhoto).length ? 'Seçimi kaldır' : 'Uygunları seç'}
+                    {selectedPhotos.length > 0 && selectedPhotos.length === photos.length ? 'Seçimi kaldır' : 'Tümünü seç'}
                   </button>
                   <button type="button" className="outline-button" disabled={analyzing || !health.geminiConfigured} onClick={analyzed ? selectBest : analyzeImages} title={!health.geminiConfigured ? 'Gemini API anahtarı gerekli' : ''}>
                     <Icon name="sparkle" size={16} /> {analyzed ? 'En iyileri seç' : 'Fotoğrafları analiz et'}
                   </button>
-                  <button type="button" className="primary-button" disabled={!selectedPhotos.length || downloading} onClick={downloadZip}>
+                  <button type="button" id="download-selected" className="primary-button" disabled={!selectedPhotos.length || downloading} onClick={downloadZip}>
                     {downloading ? <span className="button-spinner" /> : <Icon name="download" size={16} />}
                     ZIP indir <span className="button-count">{selectedPhotos.length}</span>
                   </button>
@@ -555,25 +553,26 @@ function App() {
                     <button type="button" className={`photo-check ${photo.selected ? 'photo-check-active' : ''}`} aria-label={photo.selected ? 'Seçimi kaldır' : 'Görseli seç'} onClick={(event) => {
                       event.stopPropagation()
                       togglePhoto(photo.id)
-                    }} disabled={analyzed && !isSelectablePhoto(photo)}>{photo.selected ? <Icon name="check" size={17} /> : null}</button>
+                    }}>{photo.selected ? <Icon name="check" size={17} /> : null}</button>
                     <span className="photo-open"><Icon name="external" size={15} /></span>
                   </div>
                   <div className="photo-meta">
                     <p className="photo-title" title={photo.alt}>{photo.alt || 'Başlıksız görsel'}</p>
                     <div className="photo-byline"><span>{photo.width && photo.height ? `${photo.width} × ${photo.height}` : 'Google Görseller'}</span><span className="meta-dot" /><span>{photo.sourceName || photo.photographer}</span></div>
                     {photo.score !== undefined && <div className="card-analysis">
-                      {photo.analysisError ? <span className="analysis-failed">Analiz edilemedi: {photo.analysisError}</span> : <>
                         <div className="quality-bar"><span style={{ width: `${photo.score}%` }} /></div>
                         <span className="quality-label">Estetik <b>{photo.score}/100</b></span>
                         {photo.subjectMatch && <span className={`subject-chip subject-${photo.subjectMatch}`}>
                           {photo.subjectMatch === 'match' ? 'Eşleşti' : photo.subjectMatch === 'mismatch' ? 'Eşleşmedi' : 'Belirsiz'}
                         </span>}
-                      </>}
                     </div>}
-                    {photo.personCount !== undefined && <p className="person-filter-status">
-                      {photo.personCount} kişi · yüz {photo.faceVisible && photo.faceRecognizable ? 'tanınabilir' : 'yeterince görünür değil'}
-                      {photo.subjectMatch !== 'match' ? ' · aranan kişi eşleşmedi' : photo.subjectConfidence < 70 ? ' · kimlik belirsiz' : ' · kimlik doğrulandı'}
-                    </p>}
+                    <p className={`person-filter-status ${!analyzed ? 'eligibility-pending' : photo.aiVerified ? 'eligibility-accepted' : 'eligibility-rejected'}`}>
+                      {!analyzed
+                        ? 'AI doğrulaması yapılmadı; indirilebilir, ancak doğrulanmış değildir.'
+                        : photo.aiVerified
+                          ? `AI doğrulaması geçti · ${photo.aiVerificationReason}`
+                          : `AI doğrulaması geçmedi · ${photo.aiVerificationReason || getPersonEligibilityReason(photo)} İndirilebilir, ancak doğrulanmış değildir.`}
+                    </p>
                     {photo.autoSelected && <p className="selected-reason"><Icon name="check" size={12} /> {photo.reason}</p>}
                   </div>
                 </article>)}
@@ -601,34 +600,39 @@ function App() {
         </div>
       </main>
 
-      {detailPhoto && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setDetailPhoto(null)}>
+      {currentDetailPhoto && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setDetailPhoto(null)}>
         <section className="detail-modal" role="dialog" aria-modal="true" aria-labelledby="detail-title">
           <button className="modal-close" type="button" aria-label="Kapat" onClick={() => setDetailPhoto(null)}><Icon name="close" /></button>
-          <div className="modal-image"><img src={detailPhoto.imageUrl} alt={detailPhoto.alt || 'Görsel önizlemesi'} /></div>
+          <div className="modal-image"><img src={currentDetailPhoto.imageUrl} alt={currentDetailPhoto.alt || 'Görsel önizlemesi'} /></div>
           <div className="modal-content">
             <span className="section-kicker">GÖRSEL AYRINTILARI</span>
-            <h2 id="detail-title">{detailPhoto.alt || 'Başlıksız görsel'}</h2>
-            {detailPhoto.score !== undefined ? <div className="modal-score"><Icon name="sparkle" size={16} /> AI Aesthetic Ranking <strong>{detailPhoto.score}/100</strong></div> : <p className="modal-ai-note">{detailPhoto.personCount !== undefined ? 'Kişi doğrulama filtreleri geçmedi; estetik puanı uygulanmadı.' : 'AI puanlaması için “AI ile analiz et” seçeneğini kullanın.'}</p>}
+            <h2 id="detail-title">{currentDetailPhoto.alt || 'Başlıksız görsel'}</h2>
+            {currentDetailPhoto.score !== undefined ? <div className="modal-score"><Icon name="sparkle" size={16} /> AI Aesthetic Ranking <strong>{currentDetailPhoto.score}/100</strong></div> : <p className="modal-ai-note">{analyzed ? 'AI kişi doğrulama veya puanlama kapısı geçilemedi.' : 'AI doğrulaması yapılmadı; görsel seçilip indirilebilir ancak doğrulanmış değildir.'}</p>}
             <dl className="detail-list">
-              <div><dt>Çözünürlük</dt><dd>{detailPhoto.width && detailPhoto.height ? `${detailPhoto.width} × ${detailPhoto.height} px` : 'Belirtilmemiş'}</dd></div>
-              <div><dt>Fotoğrafçı</dt><dd>{detailPhoto.photographer}</dd></div>
-              {detailPhoto.personCount !== undefined && <div><dt>Fotoğraftaki insan sayısı</dt><dd>{detailPhoto.personCount} · güven {detailPhoto.personCountConfidence}/100</dd></div>}
-              {detailPhoto.personCount !== undefined && <div><dt>Yüz görünürlüğü / tanınabilirlik</dt><dd>{detailPhoto.faceVisible ? 'Görünür' : 'Yeterince görünür değil'} · {detailPhoto.faceRecognizable ? 'Tanınabilir' : 'Tanınabilir değil'}</dd></div>}
-              {detailPhoto.personCount !== undefined && <div><dt>Aranan kişi</dt><dd>{detailPhoto.subjectMatch === 'match' ? 'Eşleşti' : detailPhoto.subjectMatch === 'mismatch' ? 'Eşleşmedi' : 'Belirsiz'} · güven {detailPhoto.subjectConfidence}/100</dd></div>}
-              {detailPhoto.score !== undefined && <div><dt>Alaka</dt><dd>{detailPhoto.relevance}/100</dd></div>}
-              {detailPhoto.score !== undefined && <div><dt>Netlik</dt><dd>{detailPhoto.clarity}/100</dd></div>}
-              {detailPhoto.score !== undefined && <div><dt>Çözünürlük</dt><dd>{detailPhoto.resolution}/100</dd></div>}
-              {detailPhoto.score !== undefined && <div><dt>Işık · Renk</dt><dd>{detailPhoto.lighting}/100 · {detailPhoto.colors}/100</dd></div>}
-              {detailPhoto.score !== undefined && <div><dt>Kompozisyon · Edit uygunluğu</dt><dd>{detailPhoto.composition}/100 · {detailPhoto.editSuitability}/100</dd></div>}
-              {detailPhoto.score !== undefined && <div><dt>Kadraj / çerçeveleme</dt><dd>{detailPhoto.framing}/100</dd></div>}
-              {detailPhoto.reason && <div><dt>AI değerlendirmesi</dt><dd>{detailPhoto.reason}</dd></div>}
-              {detailPhoto.duplicateOf && <div><dt>Benzer görsel</dt><dd>Tekrar eden içerik olarak belirlendi.</dd></div>}
-              <div><dt>Lisans</dt><dd>{detailPhoto.license || 'Belirtilmemiş; kaynak sayfasında kontrol edin'}</dd></div>
+              <div><dt>Çözünürlük</dt><dd>{currentDetailPhoto.width && currentDetailPhoto.height ? `${currentDetailPhoto.width} × ${currentDetailPhoto.height} px` : 'Belirtilmemiş'}</dd></div>
+              <div><dt>Fotoğrafçı</dt><dd>{currentDetailPhoto.photographer}</dd></div>
+              <div><dt>AI doğrulaması</dt><dd>{analyzed
+                ? currentDetailPhoto.aiVerified
+                  ? `Geçti · ${currentDetailPhoto.aiVerificationReason}`
+                  : `Geçmedi · ${currentDetailPhoto.aiVerificationReason || getPersonEligibilityReason(currentDetailPhoto)} İndirilebilir, ancak doğrulanmış değildir.`
+                : 'Yapılmadı; görsel indirilebilir fakat doğrulanmış değildir.'}</dd></div>
+              {currentDetailPhoto.personCount !== undefined && <div><dt>Fotoğraftaki insan sayısı</dt><dd>{currentDetailPhoto.personCount} · güven {currentDetailPhoto.personCountConfidence}/100</dd></div>}
+              {currentDetailPhoto.personCount !== undefined && <div><dt>Yüz görünürlüğü / tanınabilirlik</dt><dd>{currentDetailPhoto.faceVisible ? 'Görünür' : 'Yeterince görünür değil'} · {currentDetailPhoto.faceRecognizable ? 'Tanınabilir' : 'Tanınabilir değil'}</dd></div>}
+              {currentDetailPhoto.personCount !== undefined && <div><dt>Aranan kişi</dt><dd>{currentDetailPhoto.subjectMatch === 'match' ? 'Eşleşti' : currentDetailPhoto.subjectMatch === 'mismatch' ? 'Eşleşmedi' : 'Belirsiz'} · güven {currentDetailPhoto.subjectConfidence}/100</dd></div>}
+              {currentDetailPhoto.score !== undefined && <div><dt>Alaka</dt><dd>{currentDetailPhoto.relevance}/100</dd></div>}
+              {currentDetailPhoto.score !== undefined && <div><dt>Netlik</dt><dd>{currentDetailPhoto.clarity}/100</dd></div>}
+              {currentDetailPhoto.score !== undefined && <div><dt>Çözünürlük</dt><dd>{currentDetailPhoto.resolution}/100</dd></div>}
+              {currentDetailPhoto.score !== undefined && <div><dt>Işık · Renk</dt><dd>{currentDetailPhoto.lighting}/100 · {currentDetailPhoto.colors}/100</dd></div>}
+              {currentDetailPhoto.score !== undefined && <div><dt>Kompozisyon · Edit uygunluğu</dt><dd>{currentDetailPhoto.composition}/100 · {currentDetailPhoto.editSuitability}/100</dd></div>}
+              {currentDetailPhoto.score !== undefined && <div><dt>Kadraj / çerçeveleme</dt><dd>{currentDetailPhoto.framing}/100</dd></div>}
+              {currentDetailPhoto.reason && <div><dt>AI değerlendirmesi</dt><dd>{currentDetailPhoto.reason}</dd></div>}
+              {currentDetailPhoto.duplicateOf && <div><dt>Benzer görsel</dt><dd>Tekrar eden içerik olarak belirlendi.</dd></div>}
+              <div><dt>Lisans</dt><dd>{currentDetailPhoto.license || 'Belirtilmemiş; kaynak sayfasında kontrol edin'}</dd></div>
             </dl>
             <p className="license-disclaimer">İndirmeden veya kullanmadan önce kaynağın güncel lisans koşullarını kontrol edin.</p>
             <div className="modal-actions">
-              <a className="source-link" href={detailPhoto.sourceUrl} target="_blank" rel="noreferrer">{detailPhoto.sourceName || 'Görsel kaynağını'} aç <Icon name="external" size={15} /></a>
-              <button type="button" className={`primary-button ${detailPhoto.selected ? 'modal-selected' : ''}`} disabled={analyzed && !isSelectablePhoto(detailPhoto)} onClick={() => togglePhoto(detailPhoto.id)}>{detailPhoto.selected ? <Icon name="check" size={15} /> : <Icon name="image" size={15} />}{detailPhoto.selected ? 'Seçildi' : 'Seç'}</button>
+              <a className="source-link" href={currentDetailPhoto.sourceUrl} target="_blank" rel="noreferrer">{currentDetailPhoto.sourceName || 'Görsel kaynağını'} aç <Icon name="external" size={15} /></a>
+              <button type="button" className={`primary-button ${currentDetailPhoto.selected ? 'modal-selected' : ''}`} onClick={() => togglePhoto(currentDetailPhoto.id)}>{currentDetailPhoto.selected ? <Icon name="check" size={15} /> : <Icon name="image" size={15} />}{currentDetailPhoto.selected ? 'Seçildi' : 'Seç'}</button>
             </div>
           </div>
         </section>

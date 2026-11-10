@@ -112,6 +112,7 @@ async function analyze(query, photos, bestCount = 20) {
 }
 
 test('SerpApi sonuçları 20, 50 ve 100 görsel sınırına göre döndürülür', async () => {
+  let firstSearchId
   for (const count of [20, 50, 100]) {
     const response = await fetch(`${baseUrl}/api/search?query=deneme&count=${count}`)
     assert.equal(response.status, 200, await response.clone().text())
@@ -122,14 +123,30 @@ test('SerpApi sonuçları 20, 50 ve 100 görsel sınırına göre döndürülür
     assert.equal(data.photos[0].sourceName, 'Test image source')
     assert.equal(data.photos[0].sourceUrl, 'https://source.example.com/image/1')
     assert.equal(data.photos[0].previewUrl, 'https://encrypted-tbn0.gstatic.com/images?image=1')
+    if (count === 20) firstSearchId = data.searchId
   }
 
-  const nextPage = await fetch(`${baseUrl}/api/search?query=deneme&count=20&page=1`)
+  const nextPageParams = new URLSearchParams({
+    query: 'deneme',
+    count: '20',
+    page: '1',
+    searchId: firstSearchId,
+  })
+  const nextPage = await fetch(`${baseUrl}/api/search?${nextPageParams}`)
   const nextData = await nextPage.json()
   assert.equal(nextPage.status, 200)
   assert.equal(nextData.page, 1)
   assert.equal(nextData.hasMore, false)
   assert.equal(nextData.photos[0].alt, 'deneme image 101')
+  assert.equal(nextData.searchId, firstSearchId)
+
+  const wrongQuery = await fetch(`${baseUrl}/api/search?${new URLSearchParams({
+    query: 'başka sorgu',
+    count: '20',
+    page: '1',
+    searchId: firstSearchId,
+  })}`)
+  assert.equal(wrongQuery.status, 400)
 })
 
 test('SerpApi anahtarının değeri health yanıtında açıklanmaz', async () => {
@@ -228,27 +245,39 @@ test('kadın ve erkek ünlü adları aramadan Gemini doğrulamasına değiştiri
   }
 })
 
-test('yalnızca tek kişinin tek başına ve yüksek sayım güveniyle göründüğü fotoğraflar seçilir', async () => {
+test('ZIP uygunluğu kişi, kimlik ve yüz kapılarını birlikte uygular ve her sonuca gerekçe döndürür', async () => {
   geminiRequests = 0
-  const scenarios = ['single', 'group', 'two-people', 'background-people', 'crowd', 'uncertain', 'wrong-person', 'hidden-face']
-  const photos = scenarios.map((scenario) => ({
-    id: `person-${scenario}`,
-    imageUrl: `https://8.8.8.8/person-${scenario}.png`,
-    analysisUrl: `https://8.8.8.8/person-${scenario}.png`,
-    previewUrl: `https://8.8.8.8/person-${scenario}.png`,
-    sourceUrl: `https://source.example.com/${scenario}`,
-    alt: `TEST_PERSON_FILTER: ${scenario}`,
-  }))
+  const searchResponse = await fetch(`${baseUrl}/api/search?${new URLSearchParams({
+    query: 'TEST_PERSON_FILTER',
+    count: '20',
+  })}`)
+  const searchData = await searchResponse.json()
+  assert.equal(searchResponse.status, 200)
+  const scenarios = searchData.photos.map((photo) => photo.alt.split(': ')[1])
+  const photos = searchData.photos
+  const searchOnlyDownload = await fetch(`${baseUrl}/api/download`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      searchId: searchData.searchId,
+      photoIds: [photos.find((photo) => photo.alt.endsWith('group')).id],
+      photos: [{ verified: false, imageUrl: 'http://127.0.0.1/private-file' }],
+    }),
+  })
+  assert.equal(searchOnlyDownload.status, 200)
+  assert.match(searchOnlyDownload.headers.get('content-type'), /application\/zip/)
 
   const result = await analyze('Famous Actor', photos)
-  const single = result.photos.find((photo) => photo.id === 'person-single')
-  const group = result.photos.find((photo) => photo.id === 'person-group')
-  const twoPeople = result.photos.find((photo) => photo.id === 'person-two-people')
-  const backgroundPeople = result.photos.find((photo) => photo.id === 'person-background-people')
-  const crowd = result.photos.find((photo) => photo.id === 'person-crowd')
-  const uncertain = result.photos.find((photo) => photo.id === 'person-uncertain')
-  const wrongPerson = result.photos.find((photo) => photo.id === 'person-wrong-person')
-  const hiddenFace = result.photos.find((photo) => photo.id === 'person-hidden-face')
+  const findScenario = (scenario) => result.photos.find((photo) => photo.alt.endsWith(scenario))
+  const single = findScenario('single')
+  const group = findScenario('group')
+  const twoPeople = findScenario('two-people')
+  const backgroundPeople = findScenario('background-people')
+  const crowd = findScenario('crowd')
+  const uncertain = findScenario('uncertain')
+  const uncertainIdentity = findScenario('uncertain-identity')
+  const wrongPerson = findScenario('wrong-person')
+  const hiddenFace = findScenario('hidden-face')
 
   assert.equal(result.autoSelected, 1)
   assert.equal(single.personCount, 1)
@@ -257,10 +286,14 @@ test('yalnızca tek kişinin tek başına ve yüksek sayım güveniyle göründ�
   assert.equal(single.personCountConfidence, 99)
   assert.equal(typeof single.score, 'number')
   assert.equal(single.selected, true)
+  assert.equal(single.aiVerified, true)
+  assert.match(single.aiVerificationReason, /AI tarafından doğrulandı/)
 
   assert.equal(group.personCount, 2)
   assert.equal(group.score, undefined)
   assert.equal(group.autoSelected, false)
+  assert.equal(group.aiVerified, false)
+  assert.match(group.aiVerificationReason, /2 kişi/)
   assert.equal(twoPeople.personCount, 2)
   assert.equal(twoPeople.score, undefined)
   assert.equal(backgroundPeople.personCount, 2)
@@ -270,6 +303,11 @@ test('yalnızca tek kişinin tek başına ve yüksek sayım güveniyle göründ�
   assert.equal(uncertain.personCountConfidence, 52)
   assert.equal(uncertain.score, undefined)
   assert.equal(uncertain.autoSelected, false)
+  assert.equal(uncertain.aiVerified, false)
+  assert.match(uncertain.aiVerificationReason, /sayımı yeterince kesin değil/)
+  assert.equal(uncertainIdentity.subjectMatch, 'uncertain')
+  assert.equal(uncertainIdentity.aiVerified, false)
+  assert.match(uncertainIdentity.aiVerificationReason, /kimliği doğrulanamadı/)
 
   assert.equal(wrongPerson.subjectMatch, 'mismatch')
   assert.equal(wrongPerson.score, undefined)
@@ -279,23 +317,65 @@ test('yalnızca tek kişinin tek başına ve yüksek sayım güveniyle göründ�
   assert.equal(hiddenFace.faceRecognizable, false)
   assert.equal(hiddenFace.score, undefined)
   assert.equal(hiddenFace.autoSelected, false)
+  assert.equal(hiddenFace.aiVerified, false)
+  assert.match(hiddenFace.aiVerificationReason, /Yüz görünmüyor/)
+  assert.ok(result.photos.every((photo) => typeof photo.aiVerificationReason === 'string' && photo.aiVerificationReason.length > 0))
   assert.equal(geminiRequests, scenarios.length)
+
+  const unverifiedDownload = await fetch(`${baseUrl}/api/download`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      searchId: 'not-a-real-search-session',
+      photoIds: [single.id],
+      photos: [{ id: single.id, verified: true, imageUrl: 'https://8.8.8.8/person-single.png' }],
+    }),
+  })
+  assert.equal(unverifiedDownload.status, 400)
+  assert.match((await unverifiedDownload.json()).error, /arama oturumu/)
+
+  const fabricatedIdDownload = await fetch(`${baseUrl}/api/download`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      searchId: searchData.searchId,
+      photoIds: ['invented-photo-id'],
+    }),
+  })
+  assert.equal(fabricatedIdDownload.status, 400)
+  assert.match((await fabricatedIdDownload.json()).error, /bu arama oturumunda/)
+
+  const duplicateIdDownload = await fetch(`${baseUrl}/api/download`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ searchId: searchData.searchId, photoIds: [single.id, single.id] }),
+  })
+  assert.equal(duplicateIdDownload.status, 400)
+  assert.match((await duplicateIdDownload.json()).error, /seçimleri geçersiz/)
+
+  const unverifiedDownloadFromSearch = await fetch(`${baseUrl}/api/download`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ searchId: searchData.searchId, photoIds: [group.id] }),
+  })
+  assert.equal(unverifiedDownloadFromSearch.status, 200)
+  assert.match(unverifiedDownloadFromSearch.headers.get('content-type'), /application\/zip/)
 
   const rejectedDownload = await fetch(`${baseUrl}/api/download`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      jobId: result.jobId,
-      photoIds: ['person-single', 'person-background-people'],
+      searchId: searchData.searchId,
+      photoIds: [backgroundPeople.id, uncertainIdentity.id, hiddenFace.id],
     }),
   })
-  assert.equal(rejectedDownload.status, 400)
-  assert.match((await rejectedDownload.json()).error, /yalnızca tek kişi/)
+  assert.equal(rejectedDownload.status, 200)
+  assert.match(rejectedDownload.headers.get('content-type'), /application\/zip/)
 
   const validDownload = await fetch(`${baseUrl}/api/download`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jobId: result.jobId, photoIds: ['person-single'] }),
+    body: JSON.stringify({ searchId: searchData.searchId, photoIds: [single.id] }),
   })
   assert.equal(validDownload.status, 200)
   assert.match(validDownload.headers.get('content-type'), /application\/zip/)

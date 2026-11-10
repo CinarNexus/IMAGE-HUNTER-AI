@@ -238,6 +238,9 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .subject-mismatch { color: #ef9393; }.subject-uncertain { color: #e1bf7b; }
 .analysis-failed { overflow: hidden; color: #d9a0a0; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .person-filter-status { margin: 7px 0 0; color: #9aa9bc; font-size: 8px; line-height: 1.5; }
+.person-filter-status.eligibility-accepted { color: #7ed5b0; }
+.person-filter-status.eligibility-rejected { color: #d9a0a0; }
+.person-filter-status.eligibility-pending { color: #9aa9bc; }
 .selected-reason { display: flex; align-items: start; gap: 5px; margin: 8px 0 0; color: #7ed5b0; font-size: 8px; line-height: 1.45; }
 .selected-reason svg { flex: 0 0 auto; margin-top: 1px; }
 .photo-skeleton { overflow: hidden; border: 1px solid var(--border); border-radius: 11px; background: var(--surface); }

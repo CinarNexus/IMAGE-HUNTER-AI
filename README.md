@@ -54,7 +54,7 @@ npm start
 - Gemini görsel analizi: filtreyi geçen fotoğraflarda alaka, netlik, çözünürlük, ışık, renk, kompozisyon, kadraj ve edit uygunluğu için ağırlıklı 100 puanlık estetik değerlendirme
 - Doğrulanmış, benzersiz ve en az 45 puanlı görseller arasından puanı en yüksek 20 veya 100 görseli otomatik seçme
 - Kaynak sayfası, kaynak adı ve mevcutsa çözünürlük bilgileri
-- Sunucuda tamamlanmış analiz işindeki doğrulanmış fotoğraf kimliklerini yeniden kontrol ederek seçilen görselleri ve kaynak/lisans manifestini ZIP olarak indirme
+- Arama oturumundaki fotoğraf kimliklerini sunucuda yeniden kontrol ederek, AI doğrulaması yapılmış olsun veya olmasın seçilen görselleri güvenli URL ve dosya boyutu kontrolleriyle ZIP olarak indirme
 - Arama geçmişi, manuel seçim, tümünü seçme ve tekrar arama
 
 Analiz sonuçları Gemini tarafından üretilir; görsel indirilemez veya AI yanıtı doğrulanamazsa sonuç puan uydurmak yerine analiz hatası olarak gösterilir. ZIP oluşturulurken erişilemeyen görseller atlanır ve manifestte belirtilir. Google Görseller sonucu kullanım lisansı anlamına gelmez; her görselin telif ve kullanım koşullarını kaynak sayfasında kontrol edin.
