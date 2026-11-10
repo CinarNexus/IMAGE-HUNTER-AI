@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { isPersonEligible } from '../shared/person-eligibility.js'
 import './App.css'
 
 const HISTORY_KEY = 'image-hunter-history'
@@ -95,12 +96,7 @@ function App() {
   const analyzed = Boolean(analysisJobId)
   const isSelectablePhoto = (photo) => (
     !photo.duplicateOf
-    && photo.personCount === 1
-    && photo.personCountConfidence >= 90
-    && photo.faceVisible === true
-    && photo.faceRecognizable === true
-    && photo.subjectMatch === 'match'
-    && photo.subjectConfidence >= 70
+    && isPersonEligible(photo)
     && typeof photo.score === 'number'
   )
   const selectablePhotos = analyzed ? photos.filter(isSelectablePhoto) : photos

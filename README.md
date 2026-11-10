@@ -50,7 +50,7 @@ npm start
 
 - SerpApi Google Görseller araması: ilk aşamada hedefe göre 20 veya 100 aday; yeterli uygun sonuç yoksa en fazla bir ek sayfa
 - Gemini öncesi URL/erişim, en az 300 px kısa kenar ve 120.000 toplam piksel çözünürlük ve bozuk görsel filtreleri; yalnızca normalize edilmiş içeriği birebir aynı olan görseller analiz paylaşır
-- Gemini kişi filtresi: arka plan ve küçük kişiler dahil görünür tam bir insan, en az 90/100 kişi-sayım güveni, doğrulanmış aranan kimlik ve görünür/tanınabilir yüz zorunlu; grup, kalabalık, kolaj veya belirsiz sonuçlar puanlanmaz ve seçilemez
+- Gemini kişi filtresi: arka plan ve küçük kişiler dahil görünür tam bir insan, en az 90/100 kişi-sayım güveni, doğrulanmış aranan kimlik ve görünür/tanınabilir yüz zorunlu; cinsiyetten kimlik varsayılmaz ve tüm hedeflere aynı eşikler uygulanır; grup, kalabalık, kolaj veya belirsiz sonuçlar puanlanmaz ve seçilemez
 - Gemini görsel analizi: filtreyi geçen fotoğraflarda alaka, netlik, çözünürlük, ışık, renk, kompozisyon, kadraj ve edit uygunluğu için ağırlıklı 100 puanlık estetik değerlendirme
 - Doğrulanmış, benzersiz ve en az 45 puanlı görseller arasından puanı en yüksek 20 veya 100 görseli otomatik seçme
 - Kaynak sayfası, kaynak adı ve mevcutsa çözünürlük bilgileri

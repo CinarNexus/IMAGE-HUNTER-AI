@@ -16,6 +16,8 @@ const personFilterImages = Object.fromEntries(await Promise.all(
     ['uncertain', { r: 210, g: 210, b: 30 }],
     ['wrong-person', { r: 30, g: 40, b: 210 }],
     ['hidden-face', { r: 210, g: 180, b: 30 }],
+    ['female-celebrity', { r: 210, g: 30, b: 190 }],
+    ['male-celebrity', { r: 30, g: 190, b: 210 }],
   ].map(async ([name, background]) => [
     name,
     await sharp({ create: { width: 512, height: 512, channels: 3, background } }).png().toBuffer(),
@@ -32,7 +34,7 @@ globalThis.fetch = async (input, options) => {
       return new Response(smallImage, { headers: { 'Content-Type': 'image/png' } })
     }
     if (url.pathname === '/broken.png') return new Response('', { status: 404 })
-    const scenario = url.pathname.match(/^\/person-(single|group|two-people|background-people|crowd|uncertain|wrong-person|hidden-face)\.png$/)?.[1]
+    const scenario = url.pathname.match(/^\/person-(single|group|two-people|background-people|crowd|uncertain|wrong-person|hidden-face|female-celebrity|male-celebrity)\.png$/)?.[1]
     if (scenario) return new Response(personFilterImages[scenario], { headers: { 'Content-Type': 'image/png' } })
     return new Response(testImage, { headers: { 'Content-Type': 'image/png' } })
   }
@@ -45,9 +47,17 @@ globalThis.fetch = async (input, options) => {
     const requestBody = typeof options?.body === 'string'
       ? options.body
       : JSON.stringify(options?.body || {})
-    const scenario = ['group', 'two-people', 'background-people', 'crowd', 'uncertain', 'wrong-person', 'hidden-face']
+    const scenario = ['group', 'two-people', 'background-people', 'crowd', 'uncertain', 'wrong-person', 'hidden-face', 'female-celebrity', 'male-celebrity']
       .find((name) => requestBody.includes(`TEST_PERSON_FILTER: ${name}`))
-    const subject = ['group', 'two-people', 'background-people'].includes(scenario)
+    const expectedTarget = scenario === 'female-celebrity'
+      ? 'Taylor Swift'
+      : scenario === 'male-celebrity'
+        ? 'Cristiano Ronaldo'
+        : null
+    const identityMatches = expectedTarget === null || requestBody.includes(expectedTarget)
+    const subject = !identityMatches
+      ? { personCount: 1, personCountConfidence: 99, subjectMatch: 'mismatch', faceVisible: true, faceRecognizable: true, reason: 'Görseldeki kişi arama hedefiyle eşleşmiyor.' }
+      : ['group', 'two-people', 'background-people'].includes(scenario)
       ? { personCount: 2, personCountConfidence: 99, subjectMatch: 'match', faceVisible: true, faceRecognizable: true, reason: 'Fotoğrafta birden fazla insan var.' }
       : scenario === 'crowd'
         ? { personCount: 8, personCountConfidence: 99, subjectMatch: 'match', faceVisible: true, faceRecognizable: true, reason: 'Fotoğrafta kalabalık var.' }

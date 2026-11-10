@@ -193,6 +193,41 @@ test('AI analizi doğrular, yakın kopyaları ve tekrarlanan sorguları yeniden 
   assert.equal(geminiRequests, 1)
 })
 
+test('kadın ve erkek ünlü adları aramadan Gemini doğrulamasına değiştirilmeden aynı kuralla ulaşır', async () => {
+  const cases = [
+    { query: 'Taylor Swift', scenario: 'female-celebrity' },
+    { query: 'Cristiano Ronaldo', scenario: 'male-celebrity' },
+  ]
+
+  for (const { query, scenario } of cases) {
+    const searchResponse = await fetch(`${baseUrl}/api/search?${new URLSearchParams({ query, count: '20' })}`)
+    assert.equal(searchResponse.status, 200)
+    const searchData = await searchResponse.json()
+    assert.ok(searchData.photos[0].alt.startsWith(`${query} image`))
+
+    const sourcePhoto = searchData.photos[0]
+    const photo = {
+      ...sourcePhoto,
+      id: `test-${scenario}`,
+      imageUrl: `https://8.8.8.8/person-${scenario}.png`,
+      analysisUrl: `https://8.8.8.8/person-${scenario}.png`,
+      previewUrl: `https://8.8.8.8/person-${scenario}.png`,
+      sourceUrl: `https://source.example.com/${scenario}`,
+      alt: `TEST_PERSON_FILTER: ${scenario}`,
+    }
+    const result = await analyze(query, [photo])
+    const analyzedPhoto = result.photos[0]
+
+    assert.equal(result.autoSelected, 1, JSON.stringify(analyzedPhoto))
+    assert.equal(analyzedPhoto.subjectMatch, 'match')
+    assert.equal(analyzedPhoto.subjectConfidence, 96)
+    assert.equal(analyzedPhoto.personCount, 1)
+    assert.equal(analyzedPhoto.personCountConfidence, 99)
+    assert.equal(analyzedPhoto.score, 85)
+    assert.equal(analyzedPhoto.selected, true)
+  }
+})
+
 test('yalnızca tek kişinin tek başına ve yüksek sayım güveniyle göründüğü fotoğraflar seçilir', async () => {
   geminiRequests = 0
   const scenarios = ['single', 'group', 'two-people', 'background-people', 'crowd', 'uncertain', 'wrong-person', 'hidden-face']
