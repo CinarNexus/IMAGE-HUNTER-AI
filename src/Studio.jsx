@@ -23,12 +23,39 @@ const ADJUSTMENT_CONTROLS = [
 const ACCEPTED_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/avif']
 const MAX_FILE_BYTES = 15 * 1024 * 1024
 const MAX_BATCH_FILES = 5
+const STANDARD_PREVIEW_TIMEOUT_MS = 60_000
+const LAMA_PREVIEW_TIMEOUT_MS = 225_000
+const LAMA_PHASE_LABELS = {
+  'starting-python': 'LaMa Python süreci başlatılıyor',
+  'loading-python-dependencies': 'Python ve Torch bağımlılıkları yükleniyor',
+  'verifying-model': 'LaMa model dosyasının bütünlüğü doğrulanıyor',
+  'loading-model': 'TorchScript modeli belleğe yükleniyor',
+  ready: 'LaMa modeli hazır',
+  preparing: 'Görsel işleme için hazırlanıyor',
+  validating: 'Görsel ve maske doğrulanıyor',
+  'sending-image': 'Görsel yerel LaMa servisine gönderiliyor',
+  inference: 'LaMa modeli CPU üzerinde görseli işliyor',
+  encoding: 'Sonuç görseli oluşturuluyor',
+  'receiving-result': 'İşlenmiş önizleme alınıyor',
+}
 const TOOL_OPTIONS = {
   'background-removal': { tolerance: 42, softness: 16 },
   'image-enhancement': { scale: 2, sharpness: 35 },
   sharpening: { amount: 45, sigma: 1.2 },
-  'object-removal': { mask: '' },
-  'background-replacement': { backgroundColor: '#17243a', tolerance: 42, softness: 16 },
+  'object-removal': { engine: 'lama', mask: '', dilation: 4, feather: 5, radius: 3 },
+  'background-replacement': {
+    segmentationMask: '',
+    backgroundMode: 'color',
+    backgroundColor: '#17243a',
+    backgroundPreset: '',
+    backgroundUploadId: '',
+    edgeSoftness: 2,
+    maskExpansion: 0,
+    subjectScale: 1,
+    positionX: 0,
+    positionY: 0,
+    format: 'png',
+  },
   'smart-crop': { ratio: '1:1', width: 1200 },
   thumbnail: { width: 1280, height: 720, text: '', backgroundColor: '#17243a', format: 'png' },
   'glow-effects': { color: '#1677ff', intensity: 30, blur: 20 },
@@ -37,8 +64,8 @@ const TOOLS = [
   { id: 'background-removal', label: 'Arka plan kaldırma', description: 'Kenar renginden anahtarlama; düz arka planlarda en iyi sonucu verir.' },
   { id: 'image-enhancement', label: 'Kalite artırma', description: 'AI değildir: Lanczos büyütme ve isteğe bağlı keskinleştirme.' },
   { id: 'sharpening', label: 'Fotoğraf netleştirme', description: 'Klasik Sharp keskinleştirme filtresi.' },
-  { id: 'object-removal', label: 'Nesne silme', description: 'AI inpainting değildir; maskeli alanı komşu piksellerle doldurur.' },
-  { id: 'background-replacement', label: 'Arka plan değiştirme', description: 'Kenar rengi anahtarlama ve düz renk arka plan.' },
+  { id: 'object-removal', label: 'Nesne silme', description: 'LaMa generatif inpainting ve açıkça seçilebilir klasik Telea alternatifi.' },
+  { id: 'background-replacement', label: 'Arka plan değiştirme', description: 'OpenCV GrabCut ile fırça yönlendirmeli klasik segmentasyon; AI modeli değildir.' },
   { id: 'smart-crop', label: 'Akıllı kırpma', description: 'Sharp attention odaklı oran kırpma.' },
   { id: 'color-light-correction', label: 'Renk ve ışık', description: 'Sharp ile parlaklık, kontrast, doygunluk, sıcaklık, gamma ve keskinlik.' },
   { id: 'thumbnail', label: 'Thumbnail oluşturucu', description: 'Görseli kırpar, katman ve isteğe bağlı metin ekler.' },
@@ -80,6 +107,32 @@ function describeError(message) {
   return message || 'İşlem tamamlanamadı. Lütfen tekrar deneyin.'
 }
 
+async function describeResponseError(response, fallback) {
+  let body
+  try {
+    body = await response.text()
+  } catch (error) {
+    return `${fallback} (HTTP ${response.status}): Yanıt gövdesi okunamadı: ${error.message}`
+  }
+
+  let detail = ''
+  try {
+    const data = JSON.parse(body)
+    detail = data.error || data.detail || ''
+  } catch {
+    detail = body
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/g, '&')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+  return `${fallback} (HTTP ${response.status})${detail ? `: ${detail.slice(0, 500)}` : ''}`
+}
+
 function Studio() {
   const [upload, setUpload] = useState(null)
   const [adjustments, setAdjustments] = useState(EMPTY_ADJUSTMENTS)
@@ -89,6 +142,7 @@ function Studio() {
   const [exporting, setExporting] = useState(false)
   const [format, setFormat] = useState('png')
   const [originalOnly, setOriginalOnly] = useState(false)
+  const [comparisonPosition, setComparisonPosition] = useState(50)
   const [dragging, setDragging] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -96,25 +150,67 @@ function Studio() {
   const [toolOptions, setToolOptions] = useState(TOOL_OPTIONS['background-removal'])
   const [batchUploads, setBatchUploads] = useState([])
   const [batchExporting, setBatchExporting] = useState(false)
+  const [maskStrokes, setMaskStrokes] = useState([])
+  const [redoStrokes, setRedoStrokes] = useState([])
+  const [brushSize, setBrushSize] = useState(28)
+  const [maskReady, setMaskReady] = useState(false)
+  const [effectiveMaskUrl, setEffectiveMaskUrl] = useState('')
+  const [maskPreviewMode, setMaskPreviewMode] = useState('raw')
+  const [maskPreviewing, setMaskPreviewing] = useState(false)
+  const [maskPreviewError, setMaskPreviewError] = useState('')
+  const [backgroundUpload, setBackgroundUpload] = useState(null)
+  const [brushMode, setBrushMode] = useState('foreground')
+  const [lamaStatus, setLamaStatus] = useState(null)
+  const [lamaStarting, setLamaStarting] = useState(false)
   const inputRef = useRef(null)
-  const maskInputRef = useRef(null)
   const batchInputRef = useRef(null)
+  const backgroundInputRef = useRef(null)
   const previewRequestRef = useRef(null)
   const previewUrlRef = useRef('')
+  const maskPreviewRequestRef = useRef(null)
+  const effectiveMaskUrlRef = useRef('')
   const uploadRef = useRef(null)
+  const backgroundUploadRef = useRef(null)
   const batchUploadsRef = useRef([])
+  const maskCanvasRef = useRef(null)
+  const maskDataCanvasRef = useRef(null)
+  const maskDimensionsRef = useRef({ width: 0, height: 0 })
+  const activeStrokeRef = useRef(null)
 
   useEffect(() => () => {
     previewRequestRef.current?.abort()
+    maskPreviewRequestRef.current?.abort()
+    maskPreviewRequestRef.current = null
     if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+    if (effectiveMaskUrlRef.current) URL.revokeObjectURL(effectiveMaskUrlRef.current)
     if (uploadRef.current?.id) {
       fetch(`/api/studio/uploads/${uploadRef.current.id}`, { method: 'DELETE' })
         .catch((cleanupError) => console.error('Studio upload cleanup failed:', cleanupError))
+    }
+    if (backgroundUploadRef.current?.id) {
+      fetch(`/api/studio/uploads/${backgroundUploadRef.current.id}`, { method: 'DELETE' })
+        .catch((cleanupError) => console.error('Studio background cleanup failed:', cleanupError))
     }
     for (const batchUpload of batchUploadsRef.current) {
       fetch(`/api/studio/uploads/${batchUpload.id}`, { method: 'DELETE' })
         .catch((cleanupError) => console.error('Studio batch upload cleanup failed:', cleanupError))
     }
+  }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    fetch('/api/studio/lama/status', { signal: controller.signal })
+      .then(async (response) => {
+        const status = await response.json()
+        if (!response.ok) throw new Error(status.error || 'LaMa durumu alınamadı.')
+        setLamaStatus(status)
+      })
+      .catch((statusError) => {
+        if (statusError.name !== 'AbortError') {
+          setLamaStatus({ installed: false, ready: false, error: describeError(statusError.message) })
+        }
+      })
+    return () => controller.abort()
   }, [])
 
   useEffect(() => {
@@ -125,11 +221,26 @@ function Studio() {
     if (['batch-editing', 'image-to-video'].includes(activeTool)) {
       return undefined
     }
+    if (activeTool === 'object-removal' && !toolOptions.mask) return undefined
+    let timedOut = false
+    let timeoutId
     const timer = window.setTimeout(async () => {
+      setPreviewing(true)
+      setError('')
+      const timeoutMs = activeTool === 'object-removal' && toolOptions.engine === 'lama'
+        ? LAMA_PREVIEW_TIMEOUT_MS
+        : STANDARD_PREVIEW_TIMEOUT_MS
+      timeoutId = window.setTimeout(() => {
+        timedOut = true
+        controller.abort()
+      }, timeoutMs)
       try {
         const options = activeTool === 'color-light-correction'
           ? { adjustments, format }
           : toolOptions
+        if (typeof upload.id !== 'string' || !upload.id.trim()) {
+          throw new Error('Yükleme kimliği eksik. Görseli yeniden yükleyin.')
+        }
         const response = await fetch(`/api/studio/uploads/${upload.id}/tools/${activeTool}/preview`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -137,8 +248,7 @@ function Studio() {
           signal: controller.signal,
         })
         if (!response.ok) {
-          const data = await response.json()
-          throw new Error(data.error || 'Önizleme oluşturulamadı.')
+          throw new Error(await describeResponseError(response, 'Önizleme oluşturulamadı'))
         }
         const nextUrl = URL.createObjectURL(await response.blob())
         if (controller.signal.aborted) {
@@ -149,21 +259,124 @@ function Studio() {
         previewUrlRef.current = nextUrl
         setPreviewUrl(nextUrl)
       } catch (previewError) {
-        if (previewError.name !== 'AbortError') setError(describeError(previewError.message))
+        if (timedOut) {
+          setError(activeTool === 'object-removal' && toolOptions.engine === 'lama'
+            ? 'LaMa önizlemesi 3 dakika 45 saniye içinde tamamlanmadı. İşlem iptal edildi; daha küçük bir görsel deneyin.'
+            : 'Önizleme 60 saniye içinde tamamlanmadı. İşlem iptal edildi; tekrar deneyin.')
+        } else if (previewError.name !== 'AbortError') {
+          setError(describeError(previewError.message))
+        }
       } finally {
-        if (!controller.signal.aborted) setPreviewing(false)
+        window.clearTimeout(timeoutId)
+        if (!controller.signal.aborted || timedOut) setPreviewing(false)
       }
     }, 240)
 
     return () => {
       window.clearTimeout(timer)
+      window.clearTimeout(timeoutId)
       controller.abort()
     }
   }, [upload, adjustments, activeTool, toolOptions, format])
 
+  useEffect(() => {
+    maskPreviewRequestRef.current?.abort()
+    if (effectiveMaskUrlRef.current) URL.revokeObjectURL(effectiveMaskUrlRef.current)
+    effectiveMaskUrlRef.current = ''
+    if (!upload || activeTool !== 'object-removal' || !toolOptions.mask) return undefined
+
+    const controller = new AbortController()
+    maskPreviewRequestRef.current = controller
+    let timedOut = false
+    const timeoutId = window.setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, 15_000)
+    const loadMaskPreview = async () => {
+      try {
+        const response = await fetch(
+          `/api/studio/uploads/${upload.id}/tools/object-removal/mask-preview`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              options: {
+                mask: toolOptions.mask,
+                dilation: toolOptions.dilation,
+                feather: toolOptions.feather,
+              },
+            }),
+            signal: controller.signal,
+          },
+        )
+        if (!response.ok) {
+          throw new Error(await describeResponseError(response, 'Etkin maske önizlemesi oluşturulamadı'))
+        }
+        if (!response.headers.get('content-type')?.includes('image/png')) {
+          throw new Error('Sunucu etkin maske için geçerli bir PNG döndürmedi.')
+        }
+        const blob = await response.blob()
+        if (!blob.size) throw new Error('Etkin maske önizlemesi boş döndü.')
+        const nextUrl = URL.createObjectURL(blob)
+        if (controller.signal.aborted) {
+          URL.revokeObjectURL(nextUrl)
+          return
+        }
+        effectiveMaskUrlRef.current = nextUrl
+        setEffectiveMaskUrl(nextUrl)
+      } catch (maskError) {
+        if (timedOut) {
+          setMaskPreviewError('Etkin maske 15 saniyede hazırlanamadı. Lütfen yeniden deneyin.')
+        } else if (maskError.name !== 'AbortError') {
+          setMaskPreviewError(describeError(maskError.message))
+        }
+      } finally {
+        window.clearTimeout(timeoutId)
+        if (maskPreviewRequestRef.current === controller) setMaskPreviewing(false)
+      }
+    }
+    loadMaskPreview()
+    return () => {
+      window.clearTimeout(timeoutId)
+      if (maskPreviewRequestRef.current === controller) maskPreviewRequestRef.current = null
+      controller.abort()
+    }
+  }, [upload, activeTool, toolOptions.mask, toolOptions.dilation, toolOptions.feather])
+
+  useEffect(() => {
+    if (activeTool !== 'object-removal' || toolOptions.engine !== 'lama' || (!previewing && !lamaStarting)) {
+      return undefined
+    }
+    const controller = new AbortController()
+    const refreshStatus = async () => {
+      try {
+        const response = await fetch('/api/studio/lama/status', { signal: controller.signal })
+        const status = await response.json()
+        if (!response.ok) throw new Error(status.error || 'LaMa durumu alınamadı.')
+        setLamaStatus(status)
+      } catch (statusError) {
+        if (statusError.name !== 'AbortError') {
+          setLamaStatus((current) => ({ ...current, error: describeError(statusError.message) }))
+        }
+      }
+    }
+    refreshStatus()
+    const interval = window.setInterval(refreshStatus, 1000)
+    return () => {
+      window.clearInterval(interval)
+      controller.abort()
+    }
+  }, [activeTool, toolOptions.engine, previewing, lamaStarting])
+
   async function removeUpload(id) {
     const response = await fetch(`/api/studio/uploads/${id}`, { method: 'DELETE' })
     if (!response.ok && response.status !== 404) throw new Error('Geçici görsel silinemedi; bir saat içinde otomatik temizlenecek.')
+  }
+
+  function clearPreview() {
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+    previewUrlRef.current = ''
+    setPreviewUrl('')
   }
 
   async function acceptFile(file) {
@@ -188,12 +401,22 @@ function Studio() {
         headers: { 'Content-Type': 'application/octet-stream' },
         body: file,
       })
+      if (!response.ok) throw new Error(await describeResponseError(response, 'Görsel yüklenemedi'))
       const data = await response.json()
-      if (!response.ok) throw new Error(data.error || 'Görsel yüklenemedi.')
+      if (!data.upload || typeof data.upload.id !== 'string' || !data.upload.id.trim()) {
+        throw new Error('Sunucu geçerli bir yükleme kimliği döndürmedi. Lütfen tekrar yükleyin.')
+      }
       const previousUpload = uploadRef.current
       uploadRef.current = data.upload
       setUpload({ ...data.upload, name: file.name })
+      setEffectiveMaskUrl('')
+      setMaskPreviewMode('raw')
+      setMaskPreviewing(false)
+      setMaskPreviewError('')
       setAdjustments({ ...EMPTY_ADJUSTMENTS })
+      setMaskStrokes([])
+      setRedoStrokes([])
+      setMaskReady(false)
       setPreviewUrl('')
       setOriginalOnly(false)
       if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
@@ -291,24 +514,175 @@ function Studio() {
     }
   }
 
-  async function loadMask(file) {
-    if (!file) return
-    if (file.type !== 'image/png' || file.size > 1_000_000) {
-      setError('Nesne maskesi en fazla 1 MB boyutunda PNG olmalıdır.')
+  function drawMaskStrokes(strokes, { updateOptions = true } = {}) {
+    const visualCanvas = maskCanvasRef.current
+    const dataCanvas = maskDataCanvasRef.current
+    if (!visualCanvas || !dataCanvas) return
+    const { width, height } = maskDimensionsRef.current
+    const visualContext = visualCanvas.getContext('2d')
+    const maskContext = dataCanvas.getContext('2d')
+    if (!visualContext || !maskContext) {
+      setError('Tarayıcı maske fırçasını başlatamadı.')
       return
     }
-    const mask = await new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(reader.result)
-      reader.onerror = () => reject(new Error('Maske dosyası okunamadı.'))
-      reader.readAsDataURL(file)
-    })
-    updateToolOptions({ mask })
-    setNotice('Maske yüklendi. Beyaz alanlar komşu piksellerle doldurulur; bu işlem AI inpainting değildir.')
-    if (maskInputRef.current) maskInputRef.current.value = ''
+    visualContext.clearRect(0, 0, width, height)
+    maskContext.fillStyle = '#000'
+    maskContext.fillRect(0, 0, width, height)
+    for (const stroke of strokes) {
+      if (!stroke.points.length) continue
+      const start = stroke.points[0]
+      const foreground = stroke.mode === 'foreground'
+      const visualColor = activeTool === 'background-replacement'
+        ? foreground ? 'rgba(22,217,232,.62)' : 'rgba(255,64,96,.62)'
+        : 'rgba(255,64,96,.58)'
+      const dataColor = activeTool === 'background-replacement'
+        ? foreground ? '#00ff00' : '#ff0000'
+        : '#fff'
+      for (const [context, color] of [[visualContext, visualColor], [maskContext, dataColor]]) {
+        context.beginPath()
+        context.strokeStyle = color
+        context.fillStyle = color
+        const strokeSize = stroke.brushSize ?? brushSize
+        context.lineWidth = strokeSize
+        context.lineCap = 'round'
+        context.lineJoin = 'round'
+        if (stroke.points.length === 1) {
+          context.arc(start.x * width, start.y * height, strokeSize / 2, 0, Math.PI * 2)
+          context.fill()
+        } else {
+          context.moveTo(start.x * width, start.y * height)
+          for (const point of stroke.points.slice(1)) context.lineTo(point.x * width, point.y * height)
+          context.stroke()
+        }
+      }
+    }
+    if (updateOptions && ['object-removal', 'background-replacement'].includes(activeTool)) {
+      if (activeTool === 'object-removal') clearPreview()
+      const mask = dataCanvas.toDataURL('image/png')
+      setMaskReady(strokes.length > 0)
+      if (activeTool === 'object-removal') {
+        setEffectiveMaskUrl('')
+        setMaskPreviewMode('raw')
+        setMaskPreviewError('')
+        setMaskPreviewing(strokes.length > 0)
+      }
+      const maskKey = activeTool === 'object-removal' ? 'mask' : 'segmentationMask'
+      setPreviewing(strokes.length > 0 || activeTool === 'background-replacement')
+      setToolOptions((current) => ({ ...current, [maskKey]: strokes.length ? mask : '' }))
+    }
+  }
+
+  function initializeObjectMask(image) {
+    if (!image.naturalWidth || !image.naturalHeight) return
+    const scale = Math.min(1, 1024 / Math.max(image.naturalWidth, image.naturalHeight))
+    const width = Math.max(1, Math.round(image.naturalWidth * scale))
+    const height = Math.max(1, Math.round(image.naturalHeight * scale))
+    maskDimensionsRef.current = { width, height }
+    for (const canvas of [maskCanvasRef.current, maskDataCanvasRef.current]) {
+      if (!canvas) continue
+      canvas.width = width
+      canvas.height = height
+    }
+    drawMaskStrokes(maskStrokes, { updateOptions: false })
+    if (activeTool === 'object-removal') setMaskReady(Boolean(toolOptions.mask))
+  }
+
+  function objectMaskPoint(event) {
+    const canvas = maskCanvasRef.current
+    if (!canvas) return null
+    const rect = canvas.getBoundingClientRect()
+    if (!rect.width || !rect.height) return null
+    const { width, height } = maskDimensionsRef.current
+    const scale = Math.min(rect.width / width, rect.height / height)
+    const renderedWidth = width * scale
+    const renderedHeight = height * scale
+    const offsetX = (rect.width - renderedWidth) / 2
+    const offsetY = (rect.height - renderedHeight) / 2
+    return {
+      x: Math.max(0, Math.min(1, (event.clientX - rect.left - offsetX) / renderedWidth)),
+      y: Math.max(0, Math.min(1, (event.clientY - rect.top - offsetY) / renderedHeight)),
+    }
+  }
+
+  function beginObjectStroke(event) {
+    if (!maskCanvasRef.current || !maskDimensionsRef.current.width) {
+      setError('Maske alanı henüz hazır değil.')
+      return
+    }
+    const point = objectMaskPoint(event)
+    if (!point) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    activeStrokeRef.current = {
+      points: [point],
+      brushSize,
+      mode: activeTool === 'background-replacement' ? brushMode : 'remove',
+    }
+    drawMaskStrokes([...maskStrokes, activeStrokeRef.current], { updateOptions: false })
+  }
+
+  function continueObjectStroke(event) {
+    if (!activeStrokeRef.current) return
+    const point = objectMaskPoint(event)
+    if (!point) return
+    activeStrokeRef.current.points.push(point)
+    drawMaskStrokes([...maskStrokes, activeStrokeRef.current], { updateOptions: false })
+  }
+
+  function endObjectStroke() {
+    if (!activeStrokeRef.current) return
+    const completedStroke = activeStrokeRef.current
+    activeStrokeRef.current = null
+    const strokes = [...maskStrokes, completedStroke]
+    setMaskStrokes(strokes)
+    setRedoStrokes([])
+    drawMaskStrokes(strokes)
+    setNotice(activeTool === 'object-removal'
+      ? toolOptions.engine === 'lama'
+        ? 'İşaretli alan LaMa generatif modeliyle işlenecek.'
+        : 'İşaretli alan OpenCV Telea ile doldurulacak; üretken AI kullanılmaz.'
+      : 'Ön plan/arka plan işareti OpenCV GrabCut segmentasyonuna eklendi; üretken AI kullanılmaz.')
+  }
+
+  function undoMaskStroke() {
+    if (!maskStrokes.length) return
+    const strokes = maskStrokes.slice(0, -1)
+    setMaskStrokes(strokes)
+    setRedoStrokes((current) => [...current, maskStrokes.at(-1)])
+    drawMaskStrokes(strokes)
+  }
+
+  function redoMaskStroke() {
+    if (!redoStrokes.length) return
+    const strokes = [...maskStrokes, redoStrokes.at(-1)]
+    setMaskStrokes(strokes)
+    setRedoStrokes((current) => current.slice(0, -1))
+    drawMaskStrokes(strokes)
+  }
+
+  function clearMask() {
+    setMaskStrokes([])
+    setRedoStrokes([])
+    drawMaskStrokes([])
+    setMaskReady(false)
+    if (activeTool === 'object-removal') {
+      setEffectiveMaskUrl('')
+      setMaskPreviewMode('raw')
+      setMaskPreviewing(false)
+      setMaskPreviewError('')
+    }
+    const isBackgroundReplacement = activeTool === 'background-replacement'
+    setPreviewing(isBackgroundReplacement)
+    if (!isBackgroundReplacement) {
+      setPreviewUrl('')
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+      previewUrlRef.current = ''
+    }
+    const maskKey = isBackgroundReplacement ? 'segmentationMask' : 'mask'
+    setToolOptions((current) => ({ ...current, [maskKey]: '' }))
   }
 
   function selectTool(toolId) {
+    drawMaskStrokes([], { updateOptions: false })
     setActiveTool(toolId)
     if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
     previewUrlRef.current = ''
@@ -316,13 +690,93 @@ function Studio() {
     setOriginalOnly(false)
     setError('')
     setToolOptions(TOOL_OPTIONS[toolId] || {})
-    setPreviewing(Boolean(upload && !['batch-editing', 'image-to-video'].includes(toolId)))
+    setEffectiveMaskUrl('')
+    setMaskPreviewMode('raw')
+    setMaskPreviewing(false)
+    setMaskPreviewError('')
+    setMaskStrokes([])
+    setRedoStrokes([])
+    setMaskReady(false)
+    setBrushMode('foreground')
+    setPreviewing(Boolean(upload && !['batch-editing', 'image-to-video', 'object-removal', 'background-replacement'].includes(toolId)))
   }
 
   function updateToolOptions(nextOptions) {
-    setPreviewing(true)
+    clearPreview()
+    if (activeTool === 'object-removal') {
+      setEffectiveMaskUrl('')
+      setMaskPreviewMode('raw')
+      setMaskPreviewing(Boolean(upload && toolOptions.mask))
+      setMaskPreviewError('')
+    }
+    setPreviewing(Boolean(upload && (activeTool !== 'object-removal' || toolOptions.mask)))
     setError('')
     setToolOptions((current) => ({ ...current, ...nextOptions }))
+  }
+
+  async function startLama() {
+    if (lamaStarting) return
+    setLamaStarting(true)
+    setError('')
+    try {
+      const response = await fetch('/api/studio/lama/start', {
+        method: 'POST',
+        signal: AbortSignal.timeout(130_000),
+      })
+      const status = await response.json()
+      if (!response.ok) throw new Error(status.error || 'LaMa motoru başlatılamadı.')
+      setLamaStatus(status)
+    } catch (startError) {
+      setError(startError.name === 'TimeoutError'
+        ? 'LaMa motoru 2 dakika içinde hazır olmadı. Servis durumunu yenileyip tekrar deneyin.'
+        : describeError(startError.message))
+    } finally {
+      setLamaStarting(false)
+    }
+  }
+
+  async function refreshLamaStatus() {
+    try {
+      const response = await fetch('/api/studio/lama/status', { signal: AbortSignal.timeout(8_000) })
+      const status = await response.json()
+      if (!response.ok) throw new Error(status.error || 'LaMa durumu alınamadı.')
+      setLamaStatus(status)
+    } catch (statusError) {
+      setError(describeError(statusError.message))
+    }
+  }
+
+  async function chooseBackgroundImage(file) {
+    if (!file) return
+    if (!ACCEPTED_TYPES.includes(file.type) || file.size === 0 || file.size > MAX_FILE_BYTES) {
+      setError('Arka plan görseli JPEG, PNG, WebP veya AVIF olmalı ve 15 MB sınırını aşmamalıdır.')
+      return
+    }
+    setUploading(true)
+    setError('')
+    try {
+      const response = await fetch('/api/studio/uploads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: file,
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Arka plan görseli yüklenemedi.')
+      const previous = backgroundUploadRef.current
+      backgroundUploadRef.current = { ...data.upload, name: file.name }
+      setBackgroundUpload(backgroundUploadRef.current)
+      updateToolOptions({
+        backgroundMode: 'upload',
+        backgroundUploadId: data.upload.id,
+        backgroundPreset: '',
+      })
+      if (previous?.id) await removeUpload(previous.id)
+    } catch (backgroundError) {
+      setError(describeError(backgroundError.message))
+    } finally {
+      setUploading(false)
+      if (backgroundInputRef.current) backgroundInputRef.current.value = ''
+    }
   }
 
   function updateAdjustment(key, value) {
@@ -415,7 +869,7 @@ function Studio() {
           <h1 id="studio-title">AI <span>Studio</span></h1>
           <p>Fotoğrafları klasik görüntü işleme araçlarıyla düzenle. Görsel işlemleri güvenli Studio sunucusunda, video tarayıcında çalışır; orijinal dosyan değişmeden kalır.</p>
         </div>
-        <div className="studio-engine"><StudioIcon name="sparkle" size={16} /><span>{activeTool === 'image-to-video' ? 'BROWSER RECORDER' : 'SHARP ENGINE'}</span><i /> Ücretsiz</div>
+        <div className="studio-engine"><StudioIcon name="sparkle" size={16} /><span>{activeTool === 'image-to-video' ? 'BROWSER RECORDER' : ['object-removal', 'background-replacement'].includes(activeTool) ? 'OPENCV + SHARP' : 'SHARP ENGINE'}</span><i /> Ücretsiz</div>
       </header>
 
       <nav className="studio-tools" aria-label="Studio araçları">
@@ -521,6 +975,10 @@ function Studio() {
                   setPreviewUrl('')
                   setPreviewing(false)
                   setOriginalOnly(false)
+                  setEffectiveMaskUrl('')
+                  setMaskPreviewMode('raw')
+                  setMaskPreviewing(false)
+                  setMaskPreviewError('')
                   if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
                   previewUrlRef.current = ''
                   try {
@@ -533,13 +991,82 @@ function Studio() {
               </div>
               <div className={`studio-comparison ${originalOnly ? 'studio-original-only' : ''}`}>
                 <figure>
-                  <figcaption><span>ORİJİNAL</span><span>{upload.width} × {upload.height}</span></figcaption>
-                  <div className="studio-image-wrap"><img src={upload.previewUrl} alt="Orijinal fotoğraf" /></div>
+                  <figcaption>
+                    <span>{activeTool === 'object-removal' && maskPreviewMode === 'effective' ? 'ETKİN İKİLİ MASKE' : 'ORİJİNAL'}</span>
+                    <span>{activeTool === 'object-removal' && maskPreviewMode === 'effective' ? 'Beyaz: işlenecek · Siyah: korunacak' : `${upload.width} × ${upload.height}`}</span>
+                  </figcaption>
+                  {activeTool === 'object-removal' && maskReady && (
+                    <div className="studio-mask-preview-switch" role="group" aria-label="Maske önizleme türü">
+                      <button
+                        type="button"
+                        aria-pressed={maskPreviewMode === 'raw'}
+                        onClick={() => setMaskPreviewMode('raw')}
+                      >
+                        Ham fırça maskesi
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={maskPreviewMode === 'effective'}
+                        disabled={!effectiveMaskUrl}
+                        onClick={() => setMaskPreviewMode('effective')}
+                      >
+                        Etkin ikili maske
+                      </button>
+                    </div>
+                  )}
+                  <div className="studio-image-wrap">
+                    {activeTool === 'object-removal' && maskPreviewMode === 'effective' && effectiveMaskUrl ? (
+                      <img className="studio-effective-mask" src={effectiveMaskUrl} alt="LaMa'ya gönderilecek genişletilmiş ikili maske" />
+                    ) : ['object-removal', 'background-replacement'].includes(activeTool) ? (
+                      <div className="studio-mask-stage">
+                        <img src={upload.previewUrl} alt="Düzenleme maskesini çizmek için orijinal fotoğraf" onLoad={(event) => initializeObjectMask(event.currentTarget)} />
+                        <canvas
+                          ref={maskCanvasRef}
+                          className="studio-mask-overlay"
+                          aria-label="Fotoğraf düzenleme maskesi çizim alanı"
+                          onPointerDown={beginObjectStroke}
+                          onPointerMove={continueObjectStroke}
+                          onPointerUp={endObjectStroke}
+                          onPointerCancel={endObjectStroke}
+                        />
+                        <canvas ref={maskDataCanvasRef} className="studio-mask-data" aria-hidden="true" />
+                      </div>
+                    ) : <img src={upload.previewUrl} alt="Orijinal fotoğraf" />}
+                  </div>
                 </figure>
                 <figure>
                   <figcaption><span>{originalOnly ? 'ORİJİNALE DÖNÜLDÜ' : 'DÜZENLENMİŞ'}</span><span>{upload.width} × {upload.height}</span></figcaption>
-                  <div className="studio-image-wrap">
-                    <img src={originalOnly ? upload.previewUrl : previewUrl || upload.previewUrl} alt={originalOnly ? 'Orijinal fotoğraf' : `${TOOLS.find((tool) => tool.id === activeTool)?.label} sonucu`} />
+                  <div className={`studio-image-wrap ${previewUrl && !originalOnly ? 'studio-image-wrap-comparison' : ''}`}>
+                    {previewUrl && !originalOnly ? (
+                      <div className="studio-compare-wipe">
+                        <img className="studio-compare-before" src={upload.previewUrl} alt="Önce: orijinal fotoğraf" />
+                        <img
+                          className="studio-compare-after"
+                          src={previewUrl}
+                          alt={`Sonra: ${TOOLS.find((tool) => tool.id === activeTool)?.label} sonucu`}
+                          style={{ clipPath: `inset(0 ${100 - comparisonPosition}% 0 0)` }}
+                        />
+                        <span className="studio-compare-label studio-compare-label-before">ÖNCE</span>
+                        <span className="studio-compare-label studio-compare-label-after">SONRA</span>
+                        <span className="studio-compare-divider" style={{ left: `${comparisonPosition}%` }} aria-hidden="true" />
+                        <input
+                          className="studio-compare-range"
+                          type="range"
+                          min="0"
+                          max="100"
+                          value={comparisonPosition}
+                          aria-label="Önce ve sonra karşılaştırma kaydırıcısı"
+                          aria-valuetext={`Düzenlenmiş görüntü yüzde ${comparisonPosition} görünür`}
+                          onChange={(event) => setComparisonPosition(Number(event.target.value))}
+                        />
+                      </div>
+                    ) : (
+                      <img
+                        key={originalOnly ? 'original' : 'source'}
+                        src={upload.previewUrl}
+                        alt={originalOnly ? 'Orijinal fotoğraf' : 'Düzenleme önizlemesi bekleniyor'}
+                      />
+                    )}
                     {previewing && <span className="studio-preview-loading"><span className="studio-spinner" /> Önizleme güncelleniyor</span>}
                   </div>
                 </figure>
@@ -613,16 +1140,149 @@ function Studio() {
           )}
           {activeTool === 'object-removal' && (
             <div className="studio-tool-settings">
-              <p>Silmek istediğiniz bölgeyi beyaz, korunacak alanı siyah gösteren bir PNG maske seçin.</p>
-              <input ref={maskInputRef} type="file" accept="image/png" onChange={(event) => loadMask(event.target.files[0]).catch((maskError) => setError(maskError.message))} />
-              <span>{toolOptions.mask ? 'Maske hazır' : 'Maske gerekli'}</span>
+              <p>Silinecek bölgeyi boya. LaMa, yerel çalışan açık kaynaklı generatif inpainting modelidir. LaMa kurulamazsa klasik Telea seçeneğini ayrıca seçebilirsin; otomatik geçiş yapılmaz.</p>
+              <label>Silme motoru
+                <select
+                  value={toolOptions.engine ?? 'telea'}
+                  onChange={(event) => updateToolOptions({ engine: event.target.value })}
+                >
+                  <option value="lama">LaMa · Generatif AI</option>
+                  <option value="telea">Telea · Klasik görüntü işleme</option>
+                </select>
+              </label>
+              <p className="studio-lama-status" role="status">
+                {lamaStatus?.error
+                  ? `LaMa durumu: ${lamaStatus.error}`
+                  : lamaStatus?.ready
+                    ? 'LaMa modeli hazır ve bu bilgisayarda çalışıyor.'
+                    : lamaStatus?.running
+                      ? `${LAMA_PHASE_LABELS[lamaStatus.phase] || 'LaMa servisi başlatılıyor'}${lamaStatus.phaseElapsedSeconds ? ` · ${lamaStatus.phaseElapsedSeconds} sn` : ''}`
+                    : lamaStatus?.installed
+                      ? 'LaMa kurulu; modeli başlatmak için aşağıdaki düğmeyi kullan.'
+                      : 'LaMa bu bilgisayarda kurulu değil. Kurulum için npm run setup:lama komutunu çalıştır; istersen Telea’yı seçebilirsin.'}
+              </p>
+              {maskReady && (
+                <p className="studio-mask-preview-status" role={maskPreviewError ? 'alert' : 'status'}>
+                  {maskPreviewError
+                    ? maskPreviewError
+                    : maskPreviewing
+                      ? 'LaMa etkin maskesi hazırlanıyor; inference çalıştırılmıyor.'
+                      : 'Etkin maske, işlem çözünürlüğünde LaMa’ya gönderilecek ikili alandır. Beyaz alan doldurulur; siyah alan korunur.'}
+                </p>
+              )}
+              {toolOptions.engine === 'lama' && (previewing || lamaStarting) && (
+                <p className="studio-lama-progress" role="status">
+                  <span className="studio-spinner" />
+                  {LAMA_PHASE_LABELS[lamaStatus?.task?.phase || lamaStatus?.phase] || 'LaMa işlemi başlatılıyor'}
+                  {typeof lamaStatus?.task?.elapsedSeconds === 'number' && ` · ${lamaStatus.task.elapsedSeconds} sn`}
+                  {lamaStatus?.task?.phase === 'inference' && ' · Model bu aşamada güvenilir bir yüzde üretemiyor.'}
+                  {previewing && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        previewRequestRef.current?.abort()
+                        setPreviewing(false)
+                        setError('LaMa önizlemesi durduruldu. Yeniden çalıştırmak için maskeyi veya ayarları değiştirin.')
+                      }}
+                    >
+                      İptal et
+                    </button>
+                  )}
+                </p>
+              )}
+              <button
+                className="studio-secondary-button"
+                type="button"
+                onClick={refreshLamaStatus}
+                disabled={lamaStarting}
+              >
+                Kurulum durumunu yenile
+              </button>
+              {lamaStatus?.installed && !lamaStatus.ready && (
+                <button
+                  className="studio-secondary-button"
+                  type="button"
+                  onClick={startLama}
+                  disabled={lamaStarting}
+                >
+                  {lamaStarting
+                    ? `${LAMA_PHASE_LABELS[lamaStatus?.phase] || 'LaMa modeli yükleniyor'}…`
+                    : 'LaMa motorunu başlat'}
+                </button>
+              )}
+              <label>Fırça boyutu <input type="range" min="6" max="96" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))} /><output>{brushSize} px</output></label>
+              <div className="studio-mask-actions">
+                <button type="button" onClick={undoMaskStroke} disabled={!maskStrokes.length}>Geri al</button>
+                <button type="button" onClick={redoMaskStroke} disabled={!redoStrokes.length}>Yinele</button>
+                <button type="button" onClick={clearMask} disabled={!maskStrokes.length}>Maskeyi temizle</button>
+              </div>
+              <label>Maskeyi genişlet <input type="range" min="0" max="30" value={toolOptions.dilation ?? 4} onChange={(event) => updateToolOptions({ dilation: Number(event.target.value) })} /><output>{toolOptions.dilation ?? 4} px</output></label>
+              <label>Kenar yumuşatma <input type="range" min="0" max="30" value={toolOptions.feather ?? 5} onChange={(event) => updateToolOptions({ feather: Number(event.target.value) })} /><output>{toolOptions.feather ?? 5} px</output></label>
+              {toolOptions.engine === 'telea' && (
+                <label>Telea yarıçapı <input type="range" min="1" max="10" value={toolOptions.radius ?? 3} onChange={(event) => updateToolOptions({ radius: Number(event.target.value) })} /><output>{toolOptions.radius ?? 3} px</output></label>
+              )}
+              <span>{maskReady ? 'Maske çizildi · sonuç önizleniyor' : 'Silinecek alanı fırçayla işaretleyin'}</span>
             </div>
           )}
           {activeTool === 'background-replacement' && (
             <div className="studio-tool-settings">
-              <label>Yeni arka plan rengi <input type="color" value={toolOptions.backgroundColor ?? '#17243a'} onChange={(event) => updateToolOptions({ backgroundColor: event.target.value })} /></label>
-              <label>Tolerans <input type="range" min="5" max="120" value={toolOptions.tolerance ?? 42} onChange={(event) => updateToolOptions({ tolerance: Number(event.target.value) })} /></label>
-              <label>Kenar yumuşaklığı <input type="range" min="0" max="60" value={toolOptions.softness ?? 16} onChange={(event) => updateToolOptions({ softness: Number(event.target.value) })} /></label>
+              <p>GrabCut klasik görüntü segmentasyonudur, AI modeli değildir. İlk seçim iç çerçeveden başlar; nesne ve arka planı fırçayla işaretleyerek düzelt.</p>
+              <label>İşaretleme fırçası
+                <select value={brushMode} onChange={(event) => setBrushMode(event.target.value)}>
+                  <option value="foreground">Ana nesneyi ekle</option>
+                  <option value="background">Arka planı çıkar</option>
+                </select>
+              </label>
+              <label>Fırça boyutu <input type="range" min="6" max="96" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))} /><output>{brushSize} px</output></label>
+              <div className="studio-mask-legend"><span>Turkuaz: ana nesne</span><span>Pembe: arka plan</span></div>
+              <div className="studio-mask-actions">
+                <button type="button" onClick={undoMaskStroke} disabled={!maskStrokes.length}>Geri al</button>
+                <button type="button" onClick={redoMaskStroke} disabled={!redoStrokes.length}>Yinele</button>
+                <button type="button" onClick={clearMask} disabled={!maskStrokes.length}>İşaretleri temizle</button>
+              </div>
+              <label>Kenar yumuşatma <input type="range" min="0" max="20" value={toolOptions.edgeSoftness ?? 2} onChange={(event) => updateToolOptions({ edgeSoftness: Number(event.target.value) })} /><output>{toolOptions.edgeSoftness ?? 2} px</output></label>
+              <label>Maske genişlet / daralt <input type="range" min="-20" max="20" value={toolOptions.maskExpansion ?? 0} onChange={(event) => updateToolOptions({ maskExpansion: Number(event.target.value) })} /><output>{toolOptions.maskExpansion ?? 0} px</output></label>
+              <label>Yeni arka plan
+                <select value={toolOptions.backgroundMode ?? 'color'} onChange={(event) => updateToolOptions({
+                  backgroundMode: event.target.value,
+                  backgroundUploadId: event.target.value === 'upload' ? backgroundUpload?.id || '' : '',
+                  backgroundPreset: event.target.value === 'preset' ? 'soft-blue' : '',
+                })}>
+                  <option value="color">Düz renk</option>
+                  <option value="preset">Hazır degrade</option>
+                  <option value="upload">Kendi görselim</option>
+                </select>
+              </label>
+              {toolOptions.backgroundMode === 'color' && (
+                <label>Arka plan rengi <input type="color" value={toolOptions.backgroundColor ?? '#17243a'} onChange={(event) => updateToolOptions({ backgroundColor: event.target.value })} /></label>
+              )}
+              {toolOptions.backgroundMode === 'preset' && (
+                <label>Hazır arka plan
+                  <select value={toolOptions.backgroundPreset || 'soft-blue'} onChange={(event) => updateToolOptions({ backgroundPreset: event.target.value })}>
+                    <option value="soft-blue">Yumuşak mavi</option>
+                    <option value="warm-studio">Sıcak stüdyo</option>
+                    <option value="dark-graphite">Koyu grafit</option>
+                  </select>
+                </label>
+              )}
+              {toolOptions.backgroundMode === 'upload' && (
+                <>
+                  <input ref={backgroundInputRef} className="studio-file-input" type="file" accept={ACCEPTED_TYPES.join(',')} onChange={(event) => chooseBackgroundImage(event.target.files[0])} />
+                  <button type="button" className="studio-secondary-button" onClick={() => backgroundInputRef.current?.click()} disabled={uploading}>
+                    {backgroundUpload?.name || 'Arka plan fotoğrafı seç'}
+                  </button>
+                </>
+              )}
+              <label>Ana nesne boyutu <input type="range" min="0.5" max="1.5" step="0.01" value={toolOptions.subjectScale ?? 1} onChange={(event) => updateToolOptions({ subjectScale: Number(event.target.value) })} /><output>{Math.round((toolOptions.subjectScale ?? 1) * 100)}%</output></label>
+              <label>Yatay konum <input type="range" min="-0.5" max="0.5" step="0.01" value={toolOptions.positionX ?? 0} onChange={(event) => updateToolOptions({ positionX: Number(event.target.value) })} /></label>
+              <label>Dikey konum <input type="range" min="-0.5" max="0.5" step="0.01" value={toolOptions.positionY ?? 0} onChange={(event) => updateToolOptions({ positionY: Number(event.target.value) })} /></label>
+              <label>İndirme biçimi
+                <select value={toolOptions.format ?? 'png'} onChange={(event) => updateToolOptions({ format: event.target.value })}>
+                  <option value="png">PNG · Saydam kenarlar</option>
+                  <option value="jpg">JPG · Evrensel</option>
+                </select>
+              </label>
+              <span>Segmentasyon önizlemesi: {maskStrokes.length ? 'fırça işaretleri uygulandı' : 'otomatik iç çerçeve başlangıcı'}</span>
             </div>
           )}
           {activeTool === 'smart-crop' && (
@@ -664,7 +1324,7 @@ function Studio() {
               <option value="jpg">JPG · Evrensel</option>
               <option value="webp">WebP · Verimli</option>
             </select>
-            <button className="studio-export-button" type="button" onClick={exportImage} disabled={!upload || !previewUrl || originalOnly || previewing || uploading || exporting || activeTool === 'image-to-video'}>
+            <button className="studio-export-button" type="button" onClick={exportImage} disabled={!upload || !previewUrl || originalOnly || previewing || uploading || exporting || activeTool === 'image-to-video' || (activeTool === 'object-removal' && !maskReady)}>
               {exporting ? <span className="studio-spinner" /> : <StudioIcon name="download" size={17} />}
               {exporting ? 'Hazırlanıyor…' : 'Yüksek çözünürlükte indir'}
             </button>

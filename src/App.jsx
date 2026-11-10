@@ -4,8 +4,8 @@ import Studio from './Studio.jsx'
 import './App.css'
 
 const HISTORY_KEY = 'image-hunter-history'
-const SIGNATURE_INTRO_KEY = 'image-hunter-signature-intro-shown'
-const SIGNATURE_INTRO_DURATION_MS = 4_400
+const SIGNATURE_INTRO_KEY = 'image-hunter-ai-intro-shown'
+const SIGNATURE_INTRO_DURATION_MS = 3_800
 
 function shouldShowSignatureIntro() {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
@@ -383,24 +383,18 @@ function App() {
   return (
     <>
     {showSignatureIntro && (
-      <div className="signature-intro" role="presentation" aria-hidden="true">
-        <div className="signature-intro-mark">
-          <span className="signature-intro-caption">Made by</span>
-          <svg
-            className="signature-intro-logo"
-            viewBox="0 0 520 160"
-            role="img"
-            aria-label="IRONSS"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <path className="signature-letter signature-letter-1" pathLength="1" d="M67 52 C58 45 45 47 42 54 C38 62 48 67 58 63 C69 58 78 50 83 48 C73 63 66 84 60 103 C57 115 50 121 39 120 C53 120 69 113 84 101" />
-            <path className="signature-letter signature-letter-2" pathLength="1" d="M102 116 C108 93 114 69 119 49 C121 42 128 43 133 50 C139 59 135 72 126 78 C118 84 109 79 110 70 C121 75 137 77 146 86 C157 96 151 108 140 109 C133 110 128 104 126 98 C134 105 145 115 160 121" />
-            <path className="signature-letter signature-letter-3" pathLength="1" d="M167 102 C171 77 192 55 211 59 C231 63 235 89 222 108 C210 126 187 130 175 116 C163 102 172 80 192 67 C207 57 223 62 234 75 C243 87 247 103 256 115" />
-            <path className="signature-letter signature-letter-4" pathLength="1" d="M253 116 C261 93 266 71 270 51 C272 42 277 42 279 51 C285 73 288 98 296 112 C302 123 310 120 316 107 C323 91 325 73 335 67 C343 62 350 70 349 81 C347 94 339 104 331 112 C345 110 354 101 365 90" />
-            <path className="signature-letter signature-letter-5" pathLength="1" d="M386 69 C378 59 364 62 361 72 C358 82 373 88 384 93 C399 100 403 111 396 120 C387 131 369 127 359 119 C353 114 350 107 349 101" />
-            <path className="signature-letter signature-letter-6" pathLength="1" d="M449 70 C441 59 426 62 423 72 C420 82 435 88 446 93 C461 100 465 111 458 120 C449 131 431 127 421 119 C415 114 412 107 411 101" />
-            <path className="signature-flourish" pathLength="1" d="M70 137 C165 145 278 137 365 128 C401 124 432 121 464 126" />
+      <div className="cinematic-intro" role="presentation" aria-hidden="true">
+        <div className="cinematic-intro-lockup">
+          <svg className="cinematic-intro-mark" viewBox="0 0 112 112" xmlns="http://www.w3.org/2000/svg">
+            <path className="intro-mark-stroke intro-frame" pathLength="1" d="M42 13H28a15 15 0 0 0-15 15v14m57-29h14a15 15 0 0 1 15 15v14M13 70v14a15 15 0 0 0 15 15h14m57-29v14a15 15 0 0 1-15 15H70" />
+            <circle className="intro-mark-stroke intro-lens" pathLength="1" cx="56" cy="56" r="22" />
+            <path className="intro-mark-stroke intro-focus" pathLength="1" d="m49 56 5 5 10-12M56 3v8m0 90v8M3 56h8m90 0h8" />
           </svg>
+          <div className="cinematic-intro-wordmark">
+            <span className="cinematic-intro-overline">CREATIVE INTELLIGENCE</span>
+            <strong>IMAGE HUNTER</strong>
+            <span className="cinematic-intro-edition">ARTIFICIAL INTELLIGENCE</span>
+          </div>
         </div>
       </div>
     )}
