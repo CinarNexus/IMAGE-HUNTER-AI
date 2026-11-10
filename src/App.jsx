@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { getPersonEligibilityReason } from '../shared/person-eligibility.js'
+import Studio from './Studio.jsx'
 import './App.css'
 
 const HISTORY_KEY = 'image-hunter-history'
@@ -70,6 +71,7 @@ function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [notice, setNotice] = useState('')
   const [downloading, setDownloading] = useState(false)
+  const [activeView, setActiveView] = useState('search')
   const pollTimer = useRef(null)
 
   useEffect(() => {
@@ -324,11 +326,17 @@ function App() {
 
   function navigateToTool(tool) {
     setMobileNavOpen(false)
+    if (tool === 'studio') {
+      setActiveView('studio')
+      return
+    }
     if (tool === 'search') {
+      setActiveView('search')
       document.getElementById('search-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       document.querySelector('#image-query')?.focus({ preventScroll: true })
       return
     }
+    setActiveView('search')
     if (!photos.length) {
       setNotice(tool === 'downloads'
         ? 'İndirme için önce fotoğraf bulup doğrulayın.'
@@ -365,9 +373,13 @@ function App() {
 
         <div className="sidebar-section">
           <div className="sidebar-label">ÇALIŞMA ALANI</div>
-          <button className="nav-item nav-active" type="button" onClick={() => navigateToTool('search')}>
+          <button className={`nav-item ${activeView === 'search' ? 'nav-active' : ''}`} type="button" onClick={() => navigateToTool('search')}>
             <span className="nav-icon"><Icon name="search" /></span><span>AI Görsel Bulucu</span>
-            <span className="nav-current">AKTİF</span>
+            {activeView === 'search' && <span className="nav-current">AKTİF</span>}
+          </button>
+          <button className={`nav-item ${activeView === 'studio' ? 'nav-active' : ''}`} type="button" onClick={() => navigateToTool('studio')}>
+            <span className="nav-icon"><Icon name="wand" /></span><span>AI Studio</span>
+            {activeView === 'studio' && <span className="nav-current">AKTİF</span>}
           </button>
           <button className="nav-item" type="button" onClick={() => navigateToTool('collection')}>
             <span className="nav-icon"><Icon name="layers" /></span><span>Görsel Koleksiyonlarım</span>
@@ -410,7 +422,7 @@ function App() {
       <main className="main-area">
         <header className="topbar">
           <button type="button" className="mobile-menu" aria-label="Menüyü aç" onClick={() => setMobileNavOpen(true)}><Icon name="menu" /></button>
-          <div className="breadcrumb"><span>CREATIVE WORKSPACE</span><b>/</b><strong>Görsel Avcısı</strong></div>
+          <div className="breadcrumb"><span>CREATIVE WORKSPACE</span><b>/</b><strong>{activeView === 'studio' ? 'AI Studio' : 'Görsel Avcısı'}</strong></div>
           <div className="service-status">
             <span className={`status-pill ${health.searchConfigured ? 'status-ready' : ''}`} title={health.searchConfigured ? 'SerpApi bağlantısı hazır' : 'SerpApi anahtarı gerekli'}>
               <i /> SERPAPI {health.searchConfigured ? 'BAĞLI' : 'BEKLENİYOR'}
@@ -422,6 +434,7 @@ function App() {
         </header>
 
         <div className="content">
+          {activeView === 'studio' ? <Studio /> : <>
           <section className="hero-section" id="search-panel">
             <div className="hero-top">
               <div className="hero-copy-block">
@@ -597,6 +610,7 @@ function App() {
             ))}</div> : <p>Aramalarınız burada görünecek.</p>}
           </section>
           <footer className="main-footer"><span>© 2026 IMAGE HUNTER AI</span><span>Görseller Google Görseller ile bulunur. Kullanım ve lisans koşullarını kaynak sayfasında kontrol edin.</span></footer>
+          </>}
         </div>
       </main>
 

@@ -58,3 +58,18 @@ npm start
 - Arama geçmişi, manuel seçim, tümünü seçme ve tekrar arama
 
 Analiz sonuçları Gemini tarafından üretilir; görsel indirilemez veya AI yanıtı doğrulanamazsa sonuç puan uydurmak yerine analiz hatası olarak gösterilir. ZIP oluşturulurken erişilemeyen görseller atlanır ve manifestte belirtilir. Google Görseller sonucu kullanım lisansı anlamına gelmez; her görselin telif ve kullanım koşullarını kaynak sayfasında kontrol edin.
+
+## AI Studio
+
+AI Studio araçları ücretli bir AI servisi kullanmadan, görüntü işleme için Sharp veya video için tarayıcı API’leri kullanır. Mevcut görsel arama, Gemini analiz ve ZIP indirme akışlarından bağımsızdır. Çalışan araçlar: arka plan renk anahtarlama, Lanczos büyütme, keskinleştirme, maskeli alanı komşu piksellerle doldurma, düz renk arka plan değiştirme, dikkat odaklı kırpma, renk/ışık ayarı, metinli thumbnail, glow, toplu ZIP düzenleme ve tarayıcıda 5 saniyelik pan/zoom WebM.
+
+- `POST /api/studio/uploads`: JPEG, PNG, WebP veya AVIF görselini `application/octet-stream` gövdesiyle yükler. Üst sınır dosya başına 15 MB, 20 megapiksel ve kenar başına 10.000 pikseldir. Görsel türü dosya adı veya istemci MIME değerinden değil, görsel çözümlemesinden belirlenir.
+- Yanıtın `previewUrl` değeri görseli özel önbelleksiz yanıtla gösterir; `DELETE /api/studio/uploads/:id` yüklemeyi erken siler.
+- `POST /api/studio/uploads/:id/tools/:tool/preview` ve `/export`: Studio arayüzündeki ayrı araçları çalıştırır. Her istekte JSON `{ "options": { ... } }` gönderilir. Örnek araç kimlikleri: `background-removal`, `image-enhancement`, `sharpening`, `object-removal`, `background-replacement`, `smart-crop`, `color-light-correction`, `thumbnail` ve `glow-effects`.
+- Renk/ışık ayarları parlaklık ve kontrast `-50..50`, doygunluk ve sıcaklık `-100..100`, gamma `1..3`, keskinlik `0..100` alır. `POST /api/studio/batch-export` en fazla 5 aynı sahibin yükleme kimliğiyle PNG/JPG/WebP ZIP'i üretir; toplam giriş 25 MP, çıktı 75 MB ile sınırlıdır.
+- Tüm görsel işlemleri geçici kaynağı sadece okur; orijinal yükleme üzerine yazılmaz. Video özelliği sunucu API’si kullanmaz; tarayıcı `MediaRecorder` destekliyorsa 5 saniyelik pan/zoom WebM üretir, aksi durumda hata gösterir.
+- Arka plan kaldırma yalnızca kenar renginden benzer pikselleri saydamlaştırır; genel sahnelerde kişi segmentasyonu değildir. Nesne kaldırma AI inpainting değildir; maskeli alanı komşu piksellerle dolduran basit bir işlemdir. Kalite artırma AI değildir; Lanczos yeniden örnekleme ve keskinleştirme uygular. Fotoğraftan video da AI değildir.
+- Yüklemeler uygulama dışında, işletim sisteminin geçici dizininde tutulur ve bir saat sonra temizlenir. Sunucu yeniden başlatıldığında yükleme kimlikleri geçersiz olur; Render üzerinde bu alan kalıcı depolama değildir.
+- Yükleme kimlikleri tahmin edilmesi güç erişim belirteçleridir; mevcut uygulamada kullanıcı hesabı/kimlik doğrulama altyapısı yoktur. Bunları paylaşmayın.
+- Ücretli sağlayıcı/API çağrısı eklenmemiştir; hiçbir araç AI model sonucu iddia etmez.
+- İş ve tahmini kullanım kayıtları şu aşamada süreç belleğindedir; bütçe koruması çok örnekli dağıtımlarda ortak/kalıcı bir defter değildir. Uzun süreli veya çok örnekli ücretli üretim öncesinde kalıcı kuyruk, kullanım defteri ve nesne depolama yapılandırması gerekir.

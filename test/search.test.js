@@ -5,6 +5,7 @@ import { createServer } from 'node:net'
 import { createServer as createHttpServer } from 'node:http'
 import { after, before, test } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import sharp from 'sharp'
 
 const serverFile = fileURLToPath(new URL('../server/index.js', import.meta.url))
 const mockFile = fileURLToPath(new URL('../test-fixtures/mock-serpapi.js', import.meta.url))
@@ -160,6 +161,283 @@ test('SerpApi anahtarının değeri health yanıtında açıklanmaz', async () =
 test('Desteklenmeyen görsel sayısı doğrulama hatası döndürür', async () => {
   const response = await fetch(`${baseUrl}/api/search?query=deneme&count=30`)
   assert.equal(response.status, 400)
+})
+
+test('Stüdyo yüklemesi gerçek görsel formatını doğrular ve geçici önizleme sağlar', async () => {
+  const image = await sharp({
+    create: { width: 256, height: 192, channels: 3, background: { r: 28, g: 44, b: 72 } },
+  }).png().toBuffer()
+  const uploadResponse = await fetch(`${baseUrl}/api/studio/uploads`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: image,
+  })
+  assert.equal(uploadResponse.status, 201, await uploadResponse.clone().text())
+  const { upload } = await uploadResponse.json()
+  assert.equal(upload.mimeType, 'image/png')
+  assert.equal(upload.width, 256)
+  assert.equal(upload.height, 192)
+  assert.ok(upload.size > 0)
+  assert.match(upload.previewUrl, new RegExp(`/api/studio/uploads/${upload.id}$`))
+
+  const previewResponse = await fetch(`${baseUrl}${upload.previewUrl}`)
+  assert.equal(previewResponse.status, 200)
+  assert.equal(previewResponse.headers.get('content-type'), 'image/png')
+  assert.equal(previewResponse.headers.get('cache-control'), 'no-store')
+  assert.deepEqual(
+    await sharp(Buffer.from(await previewResponse.arrayBuffer())).metadata().then(({ format }) => format),
+    'png',
+  )
+
+  const deleteResponse = await fetch(`${baseUrl}${upload.previewUrl}`, { method: 'DELETE' })
+  assert.equal(deleteResponse.status, 204)
+  const expiredResponse = await fetch(`${baseUrl}${upload.previewUrl}`)
+  assert.equal(expiredResponse.status, 404)
+})
+
+test('Stüdyo yüklemesi reddeder: geçersiz içerik türü, bozuk görsel ve aşırı büyük gövde', async () => {
+  const wrongContentType = await fetch(`${baseUrl}/api/studio/uploads`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'image/png' },
+    body: Buffer.from('not-an-image'),
+  })
+  assert.equal(wrongContentType.status, 415)
+
+  const corrupted = await fetch(`${baseUrl}/api/studio/uploads`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: Buffer.from('not-an-image'),
+  })
+  assert.equal(corrupted.status, 415)
+
+  const svg = await fetch(`${baseUrl}/api/studio/uploads`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>'),
+  })
+  assert.equal(svg.status, 415)
+
+  const tooManyPixels = await sharp({
+    create: { width: 5000, height: 5000, channels: 3, background: '#fff' },
+  }).png().toBuffer()
+  const pixelLimit = await fetch(`${baseUrl}/api/studio/uploads`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: tooManyPixels,
+  })
+  assert.equal(pixelLimit.status, 413)
+
+  const oversized = await fetch(`${baseUrl}/api/studio/uploads`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: Buffer.alloc(15 * 1024 * 1024 + 1),
+  })
+  assert.equal(oversized.status, 413)
+})
+
+test('Studio Sharp düzenlemesi önizleme ve yüksek çözünürlüklü PNG/JPG/WebP üretir; orijinali korur', async () => {
+  const original = await sharp({
+    create: { width: 320, height: 240, channels: 3, background: { r: 90, g: 120, b: 160 } },
+  }).png().toBuffer()
+  const uploadResponse = await fetch(`${baseUrl}/api/studio/uploads`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: original,
+  })
+  assert.equal(uploadResponse.status, 201)
+  const { upload } = await uploadResponse.json()
+  const adjustments = {
+    brightness: 12,
+    contrast: 18,
+    saturation: 24,
+    temperature: 35,
+    gamma: 1.25,
+    sharpness: 20,
+  }
+
+  const previewResponse = await fetch(`${baseUrl}/api/studio/uploads/${upload.id}/preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ adjustments }),
+  })
+  assert.equal(previewResponse.status, 200, await previewResponse.clone().text())
+  const preview = Buffer.from(await previewResponse.arrayBuffer())
+  const previewMetadata = await sharp(preview).metadata()
+  assert.equal(previewMetadata.format, 'jpeg')
+  assert.ok(previewMetadata.width <= 1200)
+  assert.equal(previewResponse.headers.get('cache-control'), 'no-store')
+
+  for (const [format, expectedMimeType] of [['png', 'image/png'], ['jpg', 'image/jpeg'], ['webp', 'image/webp']]) {
+    const exportResponse = await fetch(`${baseUrl}/api/studio/uploads/${upload.id}/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adjustments, format }),
+    })
+    assert.equal(exportResponse.status, 200, await exportResponse.clone().text())
+    assert.equal(exportResponse.headers.get('content-type'), expectedMimeType)
+    assert.match(exportResponse.headers.get('content-disposition'), new RegExp(`image-hunter-edited\\.${format}`))
+    const exported = Buffer.from(await exportResponse.arrayBuffer())
+    const metadata = await sharp(exported).metadata()
+    assert.equal(metadata.format, format === 'jpg' ? 'jpeg' : format)
+    assert.equal(metadata.width, upload.width)
+    assert.equal(metadata.height, upload.height)
+  }
+
+  const unchangedResponse = await fetch(`${baseUrl}${upload.previewUrl}`)
+  const unchanged = Buffer.from(await unchangedResponse.arrayBuffer())
+  assert.deepEqual(unchanged, original)
+  assert.notDeepEqual(preview, original)
+})
+
+test('Studio düzenleme güvenli şekilde hatalı ayar, format ve yükleme kimliğini reddeder', async () => {
+  const image = await sharp({
+    create: { width: 64, height: 64, channels: 3, background: '#557799' },
+  }).png().toBuffer()
+  const uploadResponse = await fetch(`${baseUrl}/api/studio/uploads`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: image,
+  })
+  const { upload } = await uploadResponse.json()
+  const adjustments = {
+    brightness: 0,
+    contrast: 0,
+    saturation: 0,
+    temperature: 0,
+    gamma: 1,
+    sharpness: 0,
+  }
+
+  const invalidAdjustment = await fetch(`${baseUrl}/api/studio/uploads/${upload.id}/preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ adjustments: { ...adjustments, brightness: 1000 } }),
+  })
+  assert.equal(invalidAdjustment.status, 400)
+
+  const invalidFormat = await fetch(`${baseUrl}/api/studio/uploads/${upload.id}/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ adjustments, format: 'svg' }),
+  })
+  assert.equal(invalidFormat.status, 400)
+
+  const invalidUpload = await fetch(`${baseUrl}/api/studio/uploads/not-a-uuid/preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ adjustments }),
+  })
+  assert.equal(invalidUpload.status, 404)
+})
+
+test('Studio araç API’leri gerçek önizleme ve dışa aktarma çıktısı üretir', async () => {
+  const image = await sharp({
+    create: { width: 96, height: 72, channels: 3, background: { r: 32, g: 84, b: 142 } },
+  }).png().toBuffer()
+  const uploadResponse = await fetch(`${baseUrl}/api/studio/uploads`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: image,
+  })
+  assert.equal(uploadResponse.status, 201)
+  const { upload } = await uploadResponse.json()
+  const mask = await sharp({
+    create: { width: 16, height: 12, channels: 3, background: { r: 0, g: 0, b: 0 } },
+  }).composite([{
+    input: { create: { width: 4, height: 4, channels: 3, background: { r: 255, g: 255, b: 255 } } },
+    left: 6,
+    top: 4,
+  }]).png().toBuffer()
+  const tools = [
+    ['background-removal', {}],
+    ['image-enhancement', { scale: 2, sharpness: 0 }],
+    ['sharpening', { amount: 40, sigma: 1 }],
+    ['object-removal', { mask: mask.toString('base64') }],
+    ['background-replacement', { backgroundColor: '#eef4ff' }],
+    ['smart-crop', { ratio: '4:5', width: 100 }],
+    ['color-light-correction', {
+      format: 'png',
+      adjustments: { brightness: 12, contrast: 8, saturation: 15, temperature: 10, gamma: 1.1, sharpness: 0 },
+    }],
+    ['thumbnail', { width: 384, height: 216, text: 'Test', format: 'jpg' }],
+    ['glow-effects', { color: '#16d9e8', intensity: 30, blur: 20 }],
+  ]
+
+  try {
+    for (const [tool, options] of tools) {
+      for (const action of ['preview', 'export']) {
+        const response = await fetch(`${baseUrl}/api/studio/uploads/${upload.id}/tools/${tool}/${action}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ options }),
+        })
+        assert.equal(response.status, 200, `${tool} ${action}: ${await response.clone().text()}`)
+        const output = Buffer.from(await response.arrayBuffer())
+        assert.ok(output.length > 0, `${tool} ${action} returned an empty output`)
+        assert.match(response.headers.get('content-type'), /^image\//)
+        assert.ok((await sharp(output).metadata()).width > 0)
+        if (action === 'export') assert.match(response.headers.get('content-disposition'), new RegExp(`image-hunter-${tool}`))
+      }
+    }
+
+    const disabledTool = await fetch(`${baseUrl}/api/studio/uploads/${upload.id}/tools/not-enabled/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ options: {} }),
+    })
+    assert.equal(disabledTool.status, 400)
+    const unchangedResponse = await fetch(`${baseUrl}${upload.previewUrl}`)
+    assert.deepEqual(Buffer.from(await unchangedResponse.arrayBuffer()), image)
+  } finally {
+    await fetch(`${baseUrl}${upload.previewUrl}`, { method: 'DELETE' })
+  }
+})
+
+test('Studio toplu düzenleme oturum görsellerini ZIP olarak dışa aktarır', async () => {
+  const image = await sharp({
+    create: { width: 80, height: 60, channels: 3, background: { r: 80, g: 120, b: 170 } },
+  }).png().toBuffer()
+  const uploads = []
+  try {
+    for (let index = 0; index < 2; index += 1) {
+      const response = await fetch(`${baseUrl}/api/studio/uploads`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: image,
+      })
+      assert.equal(response.status, 201)
+      uploads.push((await response.json()).upload)
+    }
+    const adjustments = {
+      brightness: 10,
+      contrast: 5,
+      saturation: 10,
+      temperature: 0,
+      gamma: 1,
+      sharpness: 0,
+    }
+    const response = await fetch(`${baseUrl}/api/studio/batch-export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uploadIds: uploads.map(({ id }) => id), adjustments, format: 'webp' }),
+    })
+    assert.equal(response.status, 200, await response.clone().text())
+    assert.equal(response.headers.get('content-type'), 'application/zip')
+    assert.equal(response.headers.get('cache-control'), 'no-store')
+    const archive = Buffer.from(await response.arrayBuffer())
+    assert.equal(archive.subarray(0, 2).toString(), 'PK')
+
+    const invalid = await fetch(`${baseUrl}/api/studio/batch-export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uploadIds: [], adjustments, format: 'png' }),
+    })
+    assert.equal(invalid.status, 400)
+  } finally {
+    await Promise.all(uploads.map(({ previewUrl }) => (
+      fetch(`${baseUrl}${previewUrl}`, { method: 'DELETE' })
+    )))
+  }
 })
 
 test('AI analizi doğrular, yakın kopyaları ve tekrarlanan sorguları yeniden Gemini’ye göndermez', async () => {

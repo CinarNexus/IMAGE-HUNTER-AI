@@ -12,6 +12,7 @@ import {
   calculateAestheticScore,
   rankAestheticPhotos,
 } from './aesthetic.js'
+import { createStudioRouter } from './studio/router.js'
 import { getPersonEligibilityReason, isPersonEligible } from '../shared/person-eligibility.js'
 
 const root = path.dirname(fileURLToPath(import.meta.url))
@@ -38,6 +39,7 @@ const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GE
 
 app.disable('x-powered-by')
 app.use(express.json({ limit: '2mb' }))
+app.use('/api/studio', createStudioRouter())
 
 function isHttpsUrl(value) {
   try {
@@ -717,6 +719,18 @@ app.post('/api/download', async (request, response) => {
 app.use((error, _request, response, _next) => {
   console.error('API request failed:', error)
   if (response.headersSent) return response.end()
+  if (error.statusCode === 413 || error.type === 'entity.too.large') {
+    return response.status(413).json({ error: 'İstek izin verilen boyut sınırını aşıyor.' })
+  }
+  if (error.statusCode === 400) {
+    return response.status(400).json({ error: error.message })
+  }
+  if (error.statusCode === 415) {
+    return response.status(415).json({ error: error.message })
+  }
+  if (error.statusCode === 429) {
+    return response.status(429).json({ error: error.message })
+  }
   if (error.name === 'TimeoutError' || error.name === 'AbortError') {
     return response.status(504).json({ error: 'Görsel servisi zaman aşımına uğradı. Lütfen tekrar deneyin.' })
   }
