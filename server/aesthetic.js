@@ -21,14 +21,13 @@ export function calculateAestheticScore(analysis) {
 
 export function rankAestheticPhotos(photos, bestCount) {
   let selectedCount = 0
-  return photos.map((photo) => {
+  return [...photos].sort((left, right) => (right.score ?? -1) - (left.score ?? -1)).map((photo) => {
     const eligible = typeof photo.score === 'number'
       && !photo.duplicateOf
       && photo.subjectMatch === 'match'
       && photo.subjectConfidence >= 70
-      && photo.score >= 45
       && selectedCount < bestCount
     if (eligible) selectedCount += 1
     return { ...photo, autoSelected: eligible, selected: eligible }
-  }).sort((left, right) => (right.score ?? -1) - (left.score ?? -1))
+  })
 }

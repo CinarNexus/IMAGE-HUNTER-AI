@@ -40,3 +40,15 @@ test('yalnızca güvenle eşleşen, farklı ve yeterli puanlı görseller otomat
   assert.deepEqual(ranked.slice(0, 3).map((photo) => photo.id), ['mismatch', 'uncertain', 'duplicate'])
   assert.deepEqual(ranked.filter((photo) => photo.autoSelected).map((photo) => photo.id), ['best', 'second'])
 })
+
+test('otomatik seçim sonuç sırasına değil en yüksek puana göre yapılır', () => {
+  const ranked = rankAestheticPhotos([
+    { id: 'lower-first', score: 40, subjectMatch: 'match', subjectConfidence: 90 },
+    { id: 'highest', score: 95, subjectMatch: 'match', subjectConfidence: 90 },
+    { id: 'middle', score: 70, subjectMatch: 'match', subjectConfidence: 90 },
+    { id: 'mismatch', score: 100, subjectMatch: 'mismatch', subjectConfidence: 99 },
+  ], 2)
+
+  assert.deepEqual(ranked.filter((photo) => photo.autoSelected).map((photo) => photo.id), ['highest', 'middle'])
+  assert.deepEqual(ranked.slice(0, 2).map((photo) => photo.id), ['mismatch', 'highest'])
+})

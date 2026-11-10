@@ -349,7 +349,7 @@ function App() {
             <details className="aesthetic-criteria">
               <summary><Icon name="sparkle" size={14} /> AI Aesthetic Ranking · Puanlama kriterleri</summary>
               <div className="criteria-content">
-                <p>Her farklı görsel Gemini ile bir kez incelenir. Genel puan ölçütlerin ağırlıklı ortalamasıdır:</p>
+                <p>Her benzersiz görsel için ölçütler değerlendirilir. Genel puan ölçütlerin ağırlıklı ortalamasıdır:</p>
                 <ul>
                   <li><span>Arama alaka düzeyi</span><b>%20</b></li>
                   <li><span>Netlik</span><b>%15</b></li>

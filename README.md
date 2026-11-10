@@ -49,9 +49,9 @@ npm start
 ## Özellikler
 
 - SerpApi Google Görseller API'sine arama başına tek istekle 20, 50 veya 100 görsel getirme
-- Gemini görsel analizi: alaka, kalite, netlik, kompozisyon ve edit uygunluğu puanları
+- Gemini görsel analizi: aranan kişi/konu eşleşmesinin doğrulanması ve netlik, çözünürlük, ışık, renk, kompozisyon ve edit uygunluğu için ağırlıklı 100 puanlık estetik değerlendirme
 - Sharp ile görsel çözünürlüğü ve pHash ile yakın görsel benzerliği tespiti
-- AI puanına göre en iyi 10 veya 20 görseli seçme
+- Doğrulanmış, benzersiz görseller arasından puanı en yüksek 10 veya 20 görseli otomatik seçme
 - Kaynak sayfası, kaynak adı ve mevcutsa çözünürlük bilgileri
 - Seçilen görselleri ve kaynak/lisans manifestini ZIP olarak indirme
 - Arama geçmişi, manuel seçim, tümünü seçme ve tekrar arama
