@@ -6,6 +6,17 @@ const testImage = await sharp({
 const smallImage = await sharp({
   create: { width: 128, height: 128, channels: 3, background: { r: 200, g: 60, b: 90 } },
 }).png().toBuffer()
+const personFilterImages = Object.fromEntries(await Promise.all(
+  [
+    ['single', { r: 210, g: 30, b: 40 }],
+    ['group', { r: 30, g: 210, b: 40 }],
+    ['wrong-person', { r: 30, g: 40, b: 210 }],
+    ['hidden-face', { r: 210, g: 180, b: 30 }],
+  ].map(async ([name, background]) => [
+    name,
+    await sharp({ create: { width: 512, height: 512, channels: 3, background } }).png().toBuffer(),
+  ]),
+))
 
 globalThis.fetch = async (input, options) => {
   const url = input instanceof URL
@@ -17,6 +28,8 @@ globalThis.fetch = async (input, options) => {
       return new Response(smallImage, { headers: { 'Content-Type': 'image/png' } })
     }
     if (url.pathname === '/broken.png') return new Response('', { status: 404 })
+    const scenario = url.pathname.match(/^\/person-(single|group|wrong-person|hidden-face)\.png$/)?.[1]
+    if (scenario) return new Response(personFilterImages[scenario], { headers: { 'Content-Type': 'image/png' } })
     return new Response(testImage, { headers: { 'Content-Type': 'image/png' } })
   }
 
@@ -25,13 +38,24 @@ globalThis.fetch = async (input, options) => {
     if (observer) {
       await originalFetch(observer, { method: 'POST' })
     }
+    const requestBody = typeof options?.body === 'string'
+      ? options.body
+      : JSON.stringify(options?.body || {})
+    const scenario = ['group', 'wrong-person', 'hidden-face'].find((name) => requestBody.includes(`TEST_PERSON_FILTER: ${name}`))
+    const subject = scenario === 'group'
+      ? { personCount: 2, subjectMatch: 'match', faceVisible: true, faceRecognizable: true, reason: 'Fotoğrafta birden fazla insan var.' }
+      : scenario === 'wrong-person'
+        ? { personCount: 1, subjectMatch: 'mismatch', faceVisible: true, faceRecognizable: true, reason: 'Fotoğraftaki kişi aranan kişi değil.' }
+        : scenario === 'hidden-face'
+          ? { personCount: 1, subjectMatch: 'match', faceVisible: false, faceRecognizable: false, reason: 'Yüz yeterince görünür ve tanınabilir değil.' }
+          : { personCount: 1, subjectMatch: 'match', faceVisible: true, faceRecognizable: true, reason: 'Aranan kişi tek başına ve yüzü tanınabilir şekilde görünüyor.' }
     return new Response(JSON.stringify({
       candidates: [{
         content: {
           role: 'model',
           parts: [{
             text: JSON.stringify({
-              subjectMatch: 'match',
+              ...subject,
               subjectConfidence: 96,
               relevance: 90,
               clarity: 80,
@@ -41,7 +65,6 @@ globalThis.fetch = async (input, options) => {
               composition: 90,
               framing: 88,
               editSuitability: 88,
-              reason: 'Konu karede belirgin ve kompozisyon edit için dengeli.',
             }),
           }],
         },

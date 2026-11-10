@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { AESTHETIC_WEIGHTS, calculateAestheticScore, rankAestheticPhotos } from '../server/aesthetic.js'
+import { AESTHETIC_WEIGHTS, calculateAestheticScore, isPersonEligible, rankAestheticPhotos } from '../server/aesthetic.js'
 
 function analysis(overrides = {}) {
   return {
@@ -29,13 +29,13 @@ test('geçersiz kriter puanları puanlama hatası verir', () => {
 
 test('yalnızca güvenle eşleşen, farklı ve yeterli puanlı görseller otomatik seçilir', () => {
   const ranked = rankAestheticPhotos([
-    { id: 'mismatch', score: 100, subjectMatch: 'mismatch', subjectConfidence: 99 },
-    { id: 'uncertain', score: 99, subjectMatch: 'uncertain', subjectConfidence: 45 },
-    { id: 'duplicate', score: 98, subjectMatch: 'match', subjectConfidence: 95, duplicateOf: 'best' },
-    { id: 'low-confidence', score: 97, subjectMatch: 'match', subjectConfidence: 69 },
-    { id: 'best', score: 90, subjectMatch: 'match', subjectConfidence: 95 },
-    { id: 'second', score: 80, subjectMatch: 'match', subjectConfidence: 70 },
-    { id: 'third', score: 70, subjectMatch: 'match', subjectConfidence: 90 },
+    { id: 'mismatch', score: 100, personCount: 1, subjectMatch: 'mismatch', subjectConfidence: 99, faceVisible: true, faceRecognizable: true },
+    { id: 'uncertain', score: 99, personCount: 1, subjectMatch: 'uncertain', subjectConfidence: 45, faceVisible: true, faceRecognizable: true },
+    { id: 'duplicate', score: 98, personCount: 1, subjectMatch: 'match', subjectConfidence: 95, faceVisible: true, faceRecognizable: true, duplicateOf: 'best' },
+    { id: 'low-confidence', score: 97, personCount: 1, subjectMatch: 'match', subjectConfidence: 69, faceVisible: true, faceRecognizable: true },
+    { id: 'best', score: 90, personCount: 1, subjectMatch: 'match', subjectConfidence: 95, faceVisible: true, faceRecognizable: true },
+    { id: 'second', score: 80, personCount: 1, subjectMatch: 'match', subjectConfidence: 70, faceVisible: true, faceRecognizable: true },
+    { id: 'third', score: 70, personCount: 1, subjectMatch: 'match', subjectConfidence: 90, faceVisible: true, faceRecognizable: true },
   ], 2)
 
   assert.deepEqual(ranked.slice(0, 3).map((photo) => photo.id), ['mismatch', 'uncertain', 'duplicate'])
@@ -44,10 +44,10 @@ test('yalnızca güvenle eşleşen, farklı ve yeterli puanlı görseller otomat
 
 test('otomatik seçim sonuç sırasına değil en yüksek puana göre yapılır', () => {
   const ranked = rankAestheticPhotos([
-    { id: 'lower-first', score: 40, subjectMatch: 'match', subjectConfidence: 90 },
-    { id: 'highest', score: 95, subjectMatch: 'match', subjectConfidence: 90 },
-    { id: 'middle', score: 70, subjectMatch: 'match', subjectConfidence: 90 },
-    { id: 'mismatch', score: 100, subjectMatch: 'mismatch', subjectConfidence: 99 },
+    { id: 'lower-first', score: 40, personCount: 1, subjectMatch: 'match', subjectConfidence: 90, faceVisible: true, faceRecognizable: true },
+    { id: 'highest', score: 95, personCount: 1, subjectMatch: 'match', subjectConfidence: 90, faceVisible: true, faceRecognizable: true },
+    { id: 'middle', score: 70, personCount: 1, subjectMatch: 'match', subjectConfidence: 90, faceVisible: true, faceRecognizable: true },
+    { id: 'mismatch', score: 100, personCount: 1, subjectMatch: 'mismatch', subjectConfidence: 99, faceVisible: true, faceRecognizable: true },
   ], 2)
 
   assert.deepEqual(ranked.filter((photo) => photo.autoSelected).map((photo) => photo.id), ['highest', 'middle'])
@@ -56,9 +56,25 @@ test('otomatik seçim sonuç sırasına değil en yüksek puana göre yapılır'
 
 test('45 altı estetik puanı otomatik seçim için yetersiz sayılır', () => {
   const ranked = rankAestheticPhotos([
-    { id: 'below-threshold', score: 44, subjectMatch: 'match', subjectConfidence: 100 },
-    { id: 'at-threshold', score: 45, subjectMatch: 'match', subjectConfidence: 100 },
+    { id: 'below-threshold', score: 44, personCount: 1, subjectMatch: 'match', subjectConfidence: 100, faceVisible: true, faceRecognizable: true },
+    { id: 'at-threshold', score: 45, personCount: 1, subjectMatch: 'match', subjectConfidence: 100, faceVisible: true, faceRecognizable: true },
   ], 20)
 
   assert.deepEqual(ranked.filter((photo) => photo.autoSelected).map((photo) => photo.id), ['at-threshold'])
+})
+
+test('kişi filtresi tam bir kişiyi, doğru kimliği ve görünür/tanınabilir yüzü zorunlu tutar', () => {
+  const valid = {
+    personCount: 1,
+    subjectMatch: 'match',
+    subjectConfidence: 90,
+    faceVisible: true,
+    faceRecognizable: true,
+  }
+  assert.equal(isPersonEligible(valid), true)
+  assert.equal(isPersonEligible({ ...valid, personCount: 2 }), false)
+  assert.equal(isPersonEligible({ ...valid, personCount: 0 }), false)
+  assert.equal(isPersonEligible({ ...valid, subjectMatch: 'mismatch' }), false)
+  assert.equal(isPersonEligible({ ...valid, faceVisible: false }), false)
+  assert.equal(isPersonEligible({ ...valid, faceRecognizable: false }), false)
 })

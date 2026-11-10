@@ -90,6 +90,27 @@ after(async () => {
   for (const socket of observerSockets) socket.destroy()
 })
 
+async function analyze(query, photos, bestCount = 20) {
+  const response = await fetch(`${baseUrl}/api/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, bestCount, photos }),
+  })
+  assert.equal(response.status, 202)
+  const { jobId } = await response.json()
+
+  let lastStatus
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const status = await fetch(`${baseUrl}/api/jobs/${jobId}`)
+    const data = await status.json()
+    if (!status.ok) throw new Error(`Analiz işi başarısız oldu: ${data.error}`)
+    if (data.status === 'completed') return data
+    lastStatus = data
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  assert.fail(`Görsel analizi tamamlanmadı: ${JSON.stringify(lastStatus)}`)
+}
+
 test('SerpApi sonuçları 20, 50 ve 100 görsel sınırına göre döndürülür', async () => {
   for (const count of [20, 50, 100]) {
     const response = await fetch(`${baseUrl}/api/search?query=deneme&count=${count}`)
@@ -156,28 +177,7 @@ test('AI analizi doğrular, yakın kopyaları ve tekrarlanan sorguları yeniden 
     },
   ])
 
-  async function analyze(bestCount = 20) {
-    const response = await fetch(`${baseUrl}/api/analyze`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: 'Famous Actor', bestCount, photos }),
-    })
-    assert.equal(response.status, 202)
-    const { jobId } = await response.json()
-
-    let lastStatus
-    for (let attempt = 0; attempt < 80; attempt += 1) {
-      const status = await fetch(`${baseUrl}/api/jobs/${jobId}`)
-      const data = await status.json()
-      if (!status.ok) throw new Error(`Analiz işi başarısız oldu: ${data.error}`)
-      if (data.status === 'completed') return data
-      lastStatus = data
-      await new Promise((resolve) => setTimeout(resolve, 50))
-    }
-    assert.fail(`Görsel analizi tamamlanmadı: ${JSON.stringify(lastStatus)}`)
-  }
-
-  const first = await analyze()
+  const first = await analyze('Famous Actor', photos)
   assert.equal(first.photos.length, 4)
   assert.equal(first.autoSelected, 1)
   assert.equal(first.photos[0].subjectMatch, 'match')
@@ -188,9 +188,49 @@ test('AI analizi doğrular, yakın kopyaları ve tekrarlanan sorguları yeniden 
   assert.match(first.photos.find((photo) => photo.id === 'unavailable').analysisError, /HTTP 404/)
   assert.equal(geminiRequests, 1)
 
-  const second = await analyze(100)
+  const second = await analyze('Famous Actor', photos, 100)
   assert.equal(second.autoSelected, 1)
   assert.equal(geminiRequests, 1)
+})
+
+test('yalnızca tek kişinin yüzü görünür ve tanınabilir fotoğraflar puanlanıp seçilir', async () => {
+  geminiRequests = 0
+  const scenarios = ['single', 'group', 'wrong-person', 'hidden-face']
+  const photos = scenarios.map((scenario) => ({
+    id: `person-${scenario}`,
+    imageUrl: `https://8.8.8.8/person-${scenario}.png`,
+    analysisUrl: `https://8.8.8.8/person-${scenario}.png`,
+    previewUrl: `https://8.8.8.8/person-${scenario}.png`,
+    sourceUrl: `https://source.example.com/${scenario}`,
+    alt: `TEST_PERSON_FILTER: ${scenario}`,
+  }))
+
+  const result = await analyze('Famous Actor', photos)
+  const single = result.photos.find((photo) => photo.id === 'person-single')
+  const group = result.photos.find((photo) => photo.id === 'person-group')
+  const wrongPerson = result.photos.find((photo) => photo.id === 'person-wrong-person')
+  const hiddenFace = result.photos.find((photo) => photo.id === 'person-hidden-face')
+
+  assert.equal(result.autoSelected, 1)
+  assert.equal(single.personCount, 1)
+  assert.equal(single.faceVisible, true)
+  assert.equal(single.faceRecognizable, true)
+  assert.equal(typeof single.score, 'number')
+  assert.equal(single.selected, true)
+
+  assert.equal(group.personCount, 2)
+  assert.equal(group.score, undefined)
+  assert.equal(group.autoSelected, false)
+
+  assert.equal(wrongPerson.subjectMatch, 'mismatch')
+  assert.equal(wrongPerson.score, undefined)
+  assert.equal(wrongPerson.autoSelected, false)
+
+  assert.equal(hiddenFace.faceVisible, false)
+  assert.equal(hiddenFace.faceRecognizable, false)
+  assert.equal(hiddenFace.score, undefined)
+  assert.equal(hiddenFace.autoSelected, false)
+  assert.equal(geminiRequests, 4)
 })
 
 test('SerpApi anahtarı yoksa arama açıkça yapılandırma hatası verir', async (context) => {

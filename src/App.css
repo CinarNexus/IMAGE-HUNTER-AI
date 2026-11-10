@@ -169,6 +169,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .subject-mismatch { color: #e58b8b; }
 .subject-uncertain { color: #ddb978; }
 .analysis-failed { overflow: hidden; color: #cf9292; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.person-filter-status { margin: 6px 0 0; color: #9aabbe; font-size: 8px; line-height: 1.4; }
 .selected-reason { display: flex; align-items: start; gap: 4px; margin: 7px 0 0; color: #74bd9e; font-size: 8px; line-height: 1.4; }
 .selected-reason svg { flex: 0 0 auto; margin-top: 1px; }
 .photo-skeleton { overflow: hidden; border: 1px solid rgba(141,166,198,.09); border-radius: 8px; background: #0c121b; }
