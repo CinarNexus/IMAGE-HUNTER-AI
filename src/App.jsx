@@ -48,6 +48,7 @@ function App() {
   const [query, setQuery] = useState('')
   const [count, setCount] = useState(20)
   const [photos, setPhotos] = useState([])
+  const [analysisJobId, setAnalysisJobId] = useState('')
   const [searchHasMore, setSearchHasMore] = useState(false)
   const [searchPage, setSearchPage] = useState(0)
   const [history, setHistory] = useState(() => {
@@ -91,13 +92,11 @@ function App() {
   }, [notice])
 
   const selectedPhotos = photos.filter((photo) => photo.selected)
-  const analyzed = photos.some((photo) => (
-    typeof photo.personCount === 'number'
-    || typeof photo.score === 'number'
-  ))
+  const analyzed = Boolean(analysisJobId)
   const isSelectablePhoto = (photo) => (
     !photo.duplicateOf
     && photo.personCount === 1
+    && photo.personCountConfidence >= 90
     && photo.faceVisible === true
     && photo.faceRecognizable === true
     && photo.subjectMatch === 'match'
@@ -128,6 +127,7 @@ function App() {
     setLoading(true)
     setError('')
     setPhotos([])
+    setAnalysisJobId('')
     setSearchHasMore(false)
     setSearchPage(0)
     setActiveFilter('all')
@@ -168,6 +168,7 @@ function App() {
       return
     }
     setAnalyzing(true)
+    setAnalysisJobId('')
     setError('')
     setProgress({ completed: 0, prepared: 0, total: photos.length, stage: 'preparing' })
     try {
@@ -203,6 +204,7 @@ function App() {
           })
           if (statusData.status === 'completed') {
             finalStatus = statusData
+            setAnalysisJobId(data.jobId)
             setPhotos(statusData.photos)
             break
           }
@@ -282,7 +284,7 @@ function App() {
       setError('ZIP indirmeden önce AI ile kişi sayısını, kimliği ve yüz görünürlüğünü doğrulayın.')
       return
     }
-    if (!selectedPhotos.length) {
+    if (!analysisJobId || !selectedPhotos.length) {
       setError('ZIP indirmek için en az bir görsel seçin.')
       return
     }
@@ -293,9 +295,8 @@ function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          photos: selectedPhotos.map(({ id, imageUrl, sourceUrl, sourceName, alt, photographer }) => ({
-            id, imageUrl, sourceUrl, sourceName, alt, photographer,
-          })),
+          jobId: analysisJobId,
+          photoIds: selectedPhotos.map(({ id }) => id),
         }),
       })
       if (!response.ok) {
@@ -350,6 +351,7 @@ function App() {
         <a className="brand" href="#" aria-label="Image Hunter ana sayfa" onClick={(event) => {
           event.preventDefault()
           setPhotos([])
+          setAnalysisJobId('')
           setError('')
           setMobileNavOpen(false)
         }}>
@@ -614,7 +616,7 @@ function App() {
             <dl className="detail-list">
               <div><dt>Çözünürlük</dt><dd>{detailPhoto.width && detailPhoto.height ? `${detailPhoto.width} × ${detailPhoto.height} px` : 'Belirtilmemiş'}</dd></div>
               <div><dt>Fotoğrafçı</dt><dd>{detailPhoto.photographer}</dd></div>
-              {detailPhoto.personCount !== undefined && <div><dt>Fotoğraftaki insan sayısı</dt><dd>{detailPhoto.personCount}</dd></div>}
+              {detailPhoto.personCount !== undefined && <div><dt>Fotoğraftaki insan sayısı</dt><dd>{detailPhoto.personCount} · güven {detailPhoto.personCountConfidence}/100</dd></div>}
               {detailPhoto.personCount !== undefined && <div><dt>Yüz görünürlüğü / tanınabilirlik</dt><dd>{detailPhoto.faceVisible ? 'Görünür' : 'Yeterince görünür değil'} · {detailPhoto.faceRecognizable ? 'Tanınabilir' : 'Tanınabilir değil'}</dd></div>}
               {detailPhoto.personCount !== undefined && <div><dt>Aranan kişi</dt><dd>{detailPhoto.subjectMatch === 'match' ? 'Eşleşti' : detailPhoto.subjectMatch === 'mismatch' ? 'Eşleşmedi' : 'Belirsiz'} · güven {detailPhoto.subjectConfidence}/100</dd></div>}
               {detailPhoto.score !== undefined && <div><dt>Alaka</dt><dd>{detailPhoto.relevance}/100</dd></div>}

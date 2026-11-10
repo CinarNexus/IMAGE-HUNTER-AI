@@ -49,12 +49,12 @@ npm start
 ## Özellikler
 
 - SerpApi Google Görseller araması: ilk aşamada hedefe göre 20 veya 100 aday; yeterli uygun sonuç yoksa en fazla bir ek sayfa
-- Gemini öncesi URL/erişim, en az 300 px kısa kenar ve 120.000 toplam piksel çözünürlük, bozuk görsel ve pHash benzerlik filtreleri
-- Gemini kişi filtresi: fotoğrafta tam bir insan, doğrulanmış aranan kimlik ve görünür/tanınabilir yüz zorunlu; bu filtrelerden geçmeyen fotoğraflara estetik puan uygulanmaz ve seçilemez
+- Gemini öncesi URL/erişim, en az 300 px kısa kenar ve 120.000 toplam piksel çözünürlük ve bozuk görsel filtreleri; yalnızca normalize edilmiş içeriği birebir aynı olan görseller analiz paylaşır
+- Gemini kişi filtresi: arka plan ve küçük kişiler dahil görünür tam bir insan, en az 90/100 kişi-sayım güveni, doğrulanmış aranan kimlik ve görünür/tanınabilir yüz zorunlu; grup, kalabalık, kolaj veya belirsiz sonuçlar puanlanmaz ve seçilemez
 - Gemini görsel analizi: filtreyi geçen fotoğraflarda alaka, netlik, çözünürlük, ışık, renk, kompozisyon, kadraj ve edit uygunluğu için ağırlıklı 100 puanlık estetik değerlendirme
 - Doğrulanmış, benzersiz ve en az 45 puanlı görseller arasından puanı en yüksek 20 veya 100 görseli otomatik seçme
 - Kaynak sayfası, kaynak adı ve mevcutsa çözünürlük bilgileri
-- Seçilen görselleri ve kaynak/lisans manifestini ZIP olarak indirme
+- Sunucuda tamamlanmış analiz işindeki doğrulanmış fotoğraf kimliklerini yeniden kontrol ederek seçilen görselleri ve kaynak/lisans manifestini ZIP olarak indirme
 - Arama geçmişi, manuel seçim, tümünü seçme ve tekrar arama
 
 Analiz sonuçları Gemini tarafından üretilir; görsel indirilemez veya AI yanıtı doğrulanamazsa sonuç puan uydurmak yerine analiz hatası olarak gösterilir. ZIP oluşturulurken erişilemeyen görseller atlanır ve manifestte belirtilir. Google Görseller sonucu kullanım lisansı anlamına gelmez; her görselin telif ve kullanım koşullarını kaynak sayfasında kontrol edin.

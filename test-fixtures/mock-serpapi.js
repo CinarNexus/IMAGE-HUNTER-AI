@@ -10,6 +10,10 @@ const personFilterImages = Object.fromEntries(await Promise.all(
   [
     ['single', { r: 210, g: 30, b: 40 }],
     ['group', { r: 30, g: 210, b: 40 }],
+    ['two-people', { r: 210, g: 40, b: 30 }],
+    ['background-people', { r: 30, g: 210, b: 80 }],
+    ['crowd', { r: 30, g: 80, b: 210 }],
+    ['uncertain', { r: 210, g: 210, b: 30 }],
     ['wrong-person', { r: 30, g: 40, b: 210 }],
     ['hidden-face', { r: 210, g: 180, b: 30 }],
   ].map(async ([name, background]) => [
@@ -28,7 +32,7 @@ globalThis.fetch = async (input, options) => {
       return new Response(smallImage, { headers: { 'Content-Type': 'image/png' } })
     }
     if (url.pathname === '/broken.png') return new Response('', { status: 404 })
-    const scenario = url.pathname.match(/^\/person-(single|group|wrong-person|hidden-face)\.png$/)?.[1]
+    const scenario = url.pathname.match(/^\/person-(single|group|two-people|background-people|crowd|uncertain|wrong-person|hidden-face)\.png$/)?.[1]
     if (scenario) return new Response(personFilterImages[scenario], { headers: { 'Content-Type': 'image/png' } })
     return new Response(testImage, { headers: { 'Content-Type': 'image/png' } })
   }
@@ -41,14 +45,19 @@ globalThis.fetch = async (input, options) => {
     const requestBody = typeof options?.body === 'string'
       ? options.body
       : JSON.stringify(options?.body || {})
-    const scenario = ['group', 'wrong-person', 'hidden-face'].find((name) => requestBody.includes(`TEST_PERSON_FILTER: ${name}`))
-    const subject = scenario === 'group'
-      ? { personCount: 2, subjectMatch: 'match', faceVisible: true, faceRecognizable: true, reason: 'Fotoğrafta birden fazla insan var.' }
-      : scenario === 'wrong-person'
+    const scenario = ['group', 'two-people', 'background-people', 'crowd', 'uncertain', 'wrong-person', 'hidden-face']
+      .find((name) => requestBody.includes(`TEST_PERSON_FILTER: ${name}`))
+    const subject = ['group', 'two-people', 'background-people'].includes(scenario)
+      ? { personCount: 2, personCountConfidence: 99, subjectMatch: 'match', faceVisible: true, faceRecognizable: true, reason: 'Fotoğrafta birden fazla insan var.' }
+      : scenario === 'crowd'
+        ? { personCount: 8, personCountConfidence: 99, subjectMatch: 'match', faceVisible: true, faceRecognizable: true, reason: 'Fotoğrafta kalabalık var.' }
+        : scenario === 'uncertain'
+          ? { personCount: 1, personCountConfidence: 52, subjectMatch: 'match', faceVisible: true, faceRecognizable: true, reason: 'Arka plan nedeniyle kişi sayısı belirsiz.' }
+          : scenario === 'wrong-person'
         ? { personCount: 1, subjectMatch: 'mismatch', faceVisible: true, faceRecognizable: true, reason: 'Fotoğraftaki kişi aranan kişi değil.' }
         : scenario === 'hidden-face'
           ? { personCount: 1, subjectMatch: 'match', faceVisible: false, faceRecognizable: false, reason: 'Yüz yeterince görünür ve tanınabilir değil.' }
-          : { personCount: 1, subjectMatch: 'match', faceVisible: true, faceRecognizable: true, reason: 'Aranan kişi tek başına ve yüzü tanınabilir şekilde görünüyor.' }
+          : { personCount: 1, personCountConfidence: 99, subjectMatch: 'match', faceVisible: true, faceRecognizable: true, reason: 'Aranan kişi tek başına ve yüzü tanınabilir şekilde görünüyor.' }
     return new Response(JSON.stringify({
       candidates: [{
         content: {
@@ -56,6 +65,7 @@ globalThis.fetch = async (input, options) => {
           parts: [{
             text: JSON.stringify({
               ...subject,
+              personCountConfidence: subject.personCountConfidence ?? 99,
               subjectConfidence: 96,
               relevance: 90,
               clarity: 80,

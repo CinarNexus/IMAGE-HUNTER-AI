@@ -104,7 +104,7 @@ async function analyze(query, photos, bestCount = 20) {
     const status = await fetch(`${baseUrl}/api/jobs/${jobId}`)
     const data = await status.json()
     if (!status.ok) throw new Error(`Analiz işi başarısız oldu: ${data.error}`)
-    if (data.status === 'completed') return data
+    if (data.status === 'completed') return { ...data, jobId }
     lastStatus = data
     await new Promise((resolve) => setTimeout(resolve, 50))
   }
@@ -193,9 +193,9 @@ test('AI analizi doğrular, yakın kopyaları ve tekrarlanan sorguları yeniden 
   assert.equal(geminiRequests, 1)
 })
 
-test('yalnızca tek kişinin yüzü görünür ve tanınabilir fotoğraflar puanlanıp seçilir', async () => {
+test('yalnızca tek kişinin tek başına ve yüksek sayım güveniyle göründüğü fotoğraflar seçilir', async () => {
   geminiRequests = 0
-  const scenarios = ['single', 'group', 'wrong-person', 'hidden-face']
+  const scenarios = ['single', 'group', 'two-people', 'background-people', 'crowd', 'uncertain', 'wrong-person', 'hidden-face']
   const photos = scenarios.map((scenario) => ({
     id: `person-${scenario}`,
     imageUrl: `https://8.8.8.8/person-${scenario}.png`,
@@ -208,6 +208,10 @@ test('yalnızca tek kişinin yüzü görünür ve tanınabilir fotoğraflar puan
   const result = await analyze('Famous Actor', photos)
   const single = result.photos.find((photo) => photo.id === 'person-single')
   const group = result.photos.find((photo) => photo.id === 'person-group')
+  const twoPeople = result.photos.find((photo) => photo.id === 'person-two-people')
+  const backgroundPeople = result.photos.find((photo) => photo.id === 'person-background-people')
+  const crowd = result.photos.find((photo) => photo.id === 'person-crowd')
+  const uncertain = result.photos.find((photo) => photo.id === 'person-uncertain')
   const wrongPerson = result.photos.find((photo) => photo.id === 'person-wrong-person')
   const hiddenFace = result.photos.find((photo) => photo.id === 'person-hidden-face')
 
@@ -215,12 +219,22 @@ test('yalnızca tek kişinin yüzü görünür ve tanınabilir fotoğraflar puan
   assert.equal(single.personCount, 1)
   assert.equal(single.faceVisible, true)
   assert.equal(single.faceRecognizable, true)
+  assert.equal(single.personCountConfidence, 99)
   assert.equal(typeof single.score, 'number')
   assert.equal(single.selected, true)
 
   assert.equal(group.personCount, 2)
   assert.equal(group.score, undefined)
   assert.equal(group.autoSelected, false)
+  assert.equal(twoPeople.personCount, 2)
+  assert.equal(twoPeople.score, undefined)
+  assert.equal(backgroundPeople.personCount, 2)
+  assert.equal(backgroundPeople.score, undefined)
+  assert.equal(crowd.personCount, 8)
+  assert.equal(crowd.score, undefined)
+  assert.equal(uncertain.personCountConfidence, 52)
+  assert.equal(uncertain.score, undefined)
+  assert.equal(uncertain.autoSelected, false)
 
   assert.equal(wrongPerson.subjectMatch, 'mismatch')
   assert.equal(wrongPerson.score, undefined)
@@ -230,7 +244,27 @@ test('yalnızca tek kişinin yüzü görünür ve tanınabilir fotoğraflar puan
   assert.equal(hiddenFace.faceRecognizable, false)
   assert.equal(hiddenFace.score, undefined)
   assert.equal(hiddenFace.autoSelected, false)
-  assert.equal(geminiRequests, 4)
+  assert.equal(geminiRequests, scenarios.length)
+
+  const rejectedDownload = await fetch(`${baseUrl}/api/download`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jobId: result.jobId,
+      photoIds: ['person-single', 'person-background-people'],
+    }),
+  })
+  assert.equal(rejectedDownload.status, 400)
+  assert.match((await rejectedDownload.json()).error, /yalnızca tek kişi/)
+
+  const validDownload = await fetch(`${baseUrl}/api/download`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jobId: result.jobId, photoIds: ['person-single'] }),
+  })
+  assert.equal(validDownload.status, 200)
+  assert.match(validDownload.headers.get('content-type'), /application\/zip/)
+  assert.deepEqual(Array.from(new Uint8Array(await validDownload.arrayBuffer()).slice(0, 4)), [80, 75, 3, 4])
 })
 
 test('SerpApi anahtarı yoksa arama açıkça yapılandırma hatası verir', async (context) => {
