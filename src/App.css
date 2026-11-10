@@ -1,5 +1,42 @@
 #root { min-height: 100vh; }
 
+.signature-intro {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse at 50% 48%, rgba(119, 88, 174, .13), transparent 34%),
+    radial-gradient(ellipse at 50% 100%, rgba(22, 119, 255, .055), transparent 48%),
+    #0d1018;
+  animation: signature-intro-fade 4.4s ease both;
+}
+.signature-intro-mark { display: grid; width: min(86vw, 520px); justify-items: center; transform: translateY(-2vh); }
+.signature-intro-caption { margin-bottom: 5px; color: #b7adca; font: 500 11px/1.2 'DM Sans',sans-serif; letter-spacing: 3px; opacity: 0; animation: signature-caption-in .5s .28s ease-out forwards; }
+.signature-intro-logo { display: block; width: 100%; overflow: visible; filter: drop-shadow(0 0 0 rgba(204,184,255,0)); animation: signature-logo-glow .65s 3.05s ease-out forwards; }
+.signature-letter,.signature-flourish { fill: none; stroke: #f5f0ff; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 1; stroke-dashoffset: 1; }
+.signature-letter { stroke-width: 4.2; }
+.signature-letter-1 { animation: signature-draw .48s .82s cubic-bezier(.36,.02,.28,1) forwards; }
+.signature-letter-2 { animation: signature-draw .52s 1.08s cubic-bezier(.36,.02,.28,1) forwards; }
+.signature-letter-3 { animation: signature-draw .5s 1.38s cubic-bezier(.36,.02,.28,1) forwards; }
+.signature-letter-4 { animation: signature-draw .58s 1.68s cubic-bezier(.36,.02,.28,1) forwards; }
+.signature-letter-5 { animation: signature-draw .43s 2.04s cubic-bezier(.36,.02,.28,1) forwards; }
+.signature-letter-6 { animation: signature-draw .43s 2.3s cubic-bezier(.36,.02,.28,1) forwards; }
+.signature-flourish { stroke: #c9b8ff; stroke-width: 1.6; opacity: .8; animation: signature-draw .48s 2.72s ease-out forwards; }
+@keyframes signature-intro-fade {
+  0% { opacity: 0; }
+  10%, 87% { opacity: 1; }
+  100% { opacity: 0; visibility: hidden; }
+}
+@keyframes signature-caption-in { to { opacity: 1; } }
+@keyframes signature-draw { to { stroke-dashoffset: 0; } }
+@keyframes signature-logo-glow {
+  35% { filter: drop-shadow(0 0 9px rgba(205,183,255,.92)) drop-shadow(0 0 24px rgba(155,113,255,.5)); }
+  100% { filter: drop-shadow(0 0 3px rgba(205,183,255,.55)) drop-shadow(0 0 12px rgba(155,113,255,.24)); }
+}
+
 :root {
   --bg: #10141d;
   --sidebar: #111823;
@@ -356,4 +393,5 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  .signature-intro { display: none; }
 }

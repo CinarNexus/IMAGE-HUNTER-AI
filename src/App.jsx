@@ -4,6 +4,18 @@ import Studio from './Studio.jsx'
 import './App.css'
 
 const HISTORY_KEY = 'image-hunter-history'
+const SIGNATURE_INTRO_KEY = 'image-hunter-signature-intro-shown'
+const SIGNATURE_INTRO_DURATION_MS = 4_400
+
+function shouldShowSignatureIntro() {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return false
+  try {
+    return window.sessionStorage.getItem(SIGNATURE_INTRO_KEY) !== 'true'
+  } catch {
+    return true
+  }
+}
 
 function Icon({ name, size = 18 }) {
   const paths = {
@@ -47,6 +59,7 @@ function Icon({ name, size = 18 }) {
 }
 
 function App() {
+  const [showSignatureIntro, setShowSignatureIntro] = useState(shouldShowSignatureIntro)
   const [query, setQuery] = useState('')
   const [count, setCount] = useState(20)
   const [photos, setPhotos] = useState([])
@@ -73,6 +86,17 @@ function App() {
   const [downloading, setDownloading] = useState(false)
   const [activeView, setActiveView] = useState('search')
   const pollTimer = useRef(null)
+
+  useEffect(() => {
+    if (!showSignatureIntro) return undefined
+    try {
+      window.sessionStorage.setItem(SIGNATURE_INTRO_KEY, 'true')
+    } catch {
+      // The in-memory state still keeps the intro from replaying during rerenders.
+    }
+    const timer = window.setTimeout(() => setShowSignatureIntro(false), SIGNATURE_INTRO_DURATION_MS)
+    return () => window.clearTimeout(timer)
+  }, [showSignatureIntro])
 
   useEffect(() => {
     fetch('/api/health')
@@ -357,7 +381,30 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
+    <>
+    {showSignatureIntro && (
+      <div className="signature-intro" role="presentation" aria-hidden="true">
+        <div className="signature-intro-mark">
+          <span className="signature-intro-caption">Made by</span>
+          <svg
+            className="signature-intro-logo"
+            viewBox="0 0 520 160"
+            role="img"
+            aria-label="IRONSS"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path className="signature-letter signature-letter-1" pathLength="1" d="M67 52 C58 45 45 47 42 54 C38 62 48 67 58 63 C69 58 78 50 83 48 C73 63 66 84 60 103 C57 115 50 121 39 120 C53 120 69 113 84 101" />
+            <path className="signature-letter signature-letter-2" pathLength="1" d="M102 116 C108 93 114 69 119 49 C121 42 128 43 133 50 C139 59 135 72 126 78 C118 84 109 79 110 70 C121 75 137 77 146 86 C157 96 151 108 140 109 C133 110 128 104 126 98 C134 105 145 115 160 121" />
+            <path className="signature-letter signature-letter-3" pathLength="1" d="M167 102 C171 77 192 55 211 59 C231 63 235 89 222 108 C210 126 187 130 175 116 C163 102 172 80 192 67 C207 57 223 62 234 75 C243 87 247 103 256 115" />
+            <path className="signature-letter signature-letter-4" pathLength="1" d="M253 116 C261 93 266 71 270 51 C272 42 277 42 279 51 C285 73 288 98 296 112 C302 123 310 120 316 107 C323 91 325 73 335 67 C343 62 350 70 349 81 C347 94 339 104 331 112 C345 110 354 101 365 90" />
+            <path className="signature-letter signature-letter-5" pathLength="1" d="M386 69 C378 59 364 62 361 72 C358 82 373 88 384 93 C399 100 403 111 396 120 C387 131 369 127 359 119 C353 114 350 107 349 101" />
+            <path className="signature-letter signature-letter-6" pathLength="1" d="M449 70 C441 59 426 62 423 72 C420 82 435 88 446 93 C461 100 465 111 458 120 C449 131 431 127 421 119 C415 114 412 107 411 101" />
+            <path className="signature-flourish" pathLength="1" d="M70 137 C165 145 278 137 365 128 C401 124 432 121 464 126" />
+          </svg>
+        </div>
+      </div>
+    )}
+    <div className="app-shell" inert={showSignatureIntro}>
       <aside className={`sidebar ${mobileNavOpen ? 'sidebar-open' : ''}`}>
         <a className="brand" href="#" aria-label="Image Hunter ana sayfa" onClick={(event) => {
           event.preventDefault()
@@ -654,6 +701,7 @@ function App() {
 
       {notice && <div className="toast" role="status"><span><Icon name="check" size={15} /></span>{notice}<button type="button" aria-label="Bildirimi kapat" onClick={() => setNotice('')}><Icon name="close" size={14} /></button></div>}
     </div>
+    </>
   )
 }
 
