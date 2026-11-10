@@ -41,8 +41,9 @@ function Icon({ name, size = 18 }) {
 function App() {
   const [query, setQuery] = useState('')
   const [count, setCount] = useState(20)
-  const [bestCount, setBestCount] = useState(10)
   const [photos, setPhotos] = useState([])
+  const [searchHasMore, setSearchHasMore] = useState(false)
+  const [searchPage, setSearchPage] = useState(0)
   const [history, setHistory] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]')
@@ -106,16 +107,30 @@ function App() {
     setLoading(true)
     setError('')
     setPhotos([])
+    setSearchHasMore(false)
+    setSearchPage(0)
     setActiveFilter('all')
     try {
       const params = new URLSearchParams({ query: cleanQuery, count: String(requestedCount) })
-      const response = await fetch(`/api/search?${params}`)
-      const data = await response.json()
+      let response = await fetch(`/api/search?${params}`)
+      let data = await response.json()
       if (!response.ok) throw new Error(data.error || 'Görseller aranırken bir hata oluştu.')
-      const items = data.photos.map((photo) => ({ ...photo, selected: false }))
+      let page = 0
+      let items = data.photos
+      if (!items.length && data.hasMore) {
+        page = 1
+        params.set('page', String(page))
+        response = await fetch(`/api/search?${params}`)
+        data = await response.json()
+        if (!response.ok) throw new Error(data.error || 'Ek görseller aranırken bir hata oluştu.')
+        items = data.photos
+      }
+      items = items.map((photo) => ({ ...photo, selected: false }))
       setPhotos(items)
+      setSearchHasMore(data.hasMore)
+      setSearchPage(page)
       setHistory((previous) => [
-        { query: cleanQuery, count: items.length, time: Date.now() },
+        { query: cleanQuery, count: requestedCount, time: Date.now() },
         ...previous.filter((entry) => entry.query.toLowerCase() !== cleanQuery.toLowerCase()),
       ].slice(0, 8))
       if (items.length === 0) setNotice('Bu arama için kaynakta görsel bulunamadı.')
@@ -135,43 +150,75 @@ function App() {
     setError('')
     setProgress({ completed: 0, prepared: 0, total: photos.length, stage: 'preparing' })
     try {
-      const response = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query,
-          bestCount,
-          photos: photos.map(({ id, imageUrl, previewUrl, analysisUrl, sourceUrl, sourceName, license, licenseUrl, alt, photographer }) => ({
-            id, imageUrl, previewUrl, analysisUrl, sourceUrl, sourceName, license, licenseUrl, alt, photographer,
-          })),
-        }),
-      })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.error || 'AI analizi başlatılamadı.')
+      let candidates = photos
+      let page = searchPage
+      let hasMore = searchHasMore
+      let finalStatus
 
       while (true) {
-        const statusResponse = await fetch(`/api/jobs/${data.jobId}`)
-        const statusData = await statusResponse.json()
-        if (!statusResponse.ok) throw new Error(statusData.error || 'Analiz durumu alınamadı.')
-        setProgress({
-          completed: statusData.completed,
-          prepared: statusData.prepared,
-          total: statusData.total,
-          stage: statusData.stage,
+        const response = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            query,
+            bestCount: count,
+            photos: candidates.map(({ id, imageUrl, previewUrl, analysisUrl, sourceUrl, sourceName, license, licenseUrl, alt, photographer }) => ({
+              id, imageUrl, previewUrl, analysisUrl, sourceUrl, sourceName, license, licenseUrl, alt, photographer,
+            })),
+          }),
         })
-        if (statusData.status === 'completed') {
-          setPhotos(statusData.photos)
-          setActiveFilter('all')
-          if (statusData.failed > 0) {
-            setNotice(`${statusData.failed} görsel analiz edilemedi; diğer sonuçlar puanlandı.`)
-          } else {
-            setNotice(`${statusData.autoSelected} görsel AI tarafından seçildi.`)
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || 'AI analizi başlatılamadı.')
+
+        while (true) {
+          const statusResponse = await fetch(`/api/jobs/${data.jobId}`)
+          const statusData = await statusResponse.json()
+          if (!statusResponse.ok) throw new Error(statusData.error || 'Analiz durumu alınamadı.')
+          setProgress({
+            completed: statusData.completed,
+            prepared: statusData.prepared,
+            total: statusData.total,
+            stage: statusData.stage,
+          })
+          if (statusData.status === 'completed') {
+            finalStatus = statusData
+            setPhotos(statusData.photos)
+            break
           }
-          break
+          await new Promise((resolve) => {
+            pollTimer.current = window.setTimeout(resolve, 850)
+          })
         }
-        await new Promise((resolve) => {
-          pollTimer.current = window.setTimeout(resolve, 850)
-        })
+
+        if (finalStatus.autoSelected >= count || !hasMore || page >= 1) break
+
+        page += 1
+        setProgress({ completed: 0, prepared: 0, total: count, stage: 'searching' })
+        const params = new URLSearchParams({ query, count: String(count), page: String(page) })
+        const nextResponse = await fetch(`/api/search?${params}`)
+        const nextData = await nextResponse.json()
+        if (!nextResponse.ok) throw new Error(nextData.error || 'Ek görseller aranırken bir hata oluştu.')
+        const knownIds = new Set(candidates.map((photo) => photo.id))
+        const additionalPhotos = nextData.photos
+          .filter((photo) => !knownIds.has(photo.id))
+          .map((photo) => ({ ...photo, selected: false }))
+        hasMore = nextData.hasMore
+        setSearchHasMore(hasMore)
+        setSearchPage(page)
+        if (!additionalPhotos.length) break
+        candidates = [...candidates, ...additionalPhotos]
+        setPhotos(candidates)
+      }
+
+      setActiveFilter('all')
+      if (finalStatus.autoSelected < count) {
+        setNotice(page > 0
+          ? `${finalStatus.autoSelected}/${count} uygun fotoğraf bulundu; ek arama sayfası da tarandı.`
+          : `${finalStatus.autoSelected}/${count} uygun fotoğraf bulundu; başka sonuç sayfası yok.`)
+      } else if (finalStatus.failed > 0) {
+        setNotice(`${finalStatus.failed} görsel Gemini analizine uygun değildi; diğer sonuçlar puanlandı.`)
+      } else {
+        setNotice(`${finalStatus.autoSelected} görsel AI tarafından seçildi.`)
       }
     } catch (analysisError) {
       setError(analysisError.message)
@@ -239,7 +286,7 @@ function App() {
   }
 
   function openHistorySearch(entry) {
-    const historyCount = entry.count >= 100 ? 100 : entry.count >= 50 ? 50 : 20
+    const historyCount = entry.count >= 100 ? 100 : 20
     setCount(historyCount)
     searchImages(entry.query, historyCount)
     setMobileNavOpen(false)
@@ -333,33 +380,28 @@ function App() {
             </form>
 
             <div className="search-options">
-              <label className="select-control"><span>SONUÇ</span>
-                <select value={count} onChange={(event) => setCount(Number(event.target.value))} disabled={loading || analyzing}>
-                  <option value="20">20 görsel</option><option value="50">50 görsel</option><option value="100">100 görsel</option>
+              <label className="select-control"><span>HEDEF</span>
+                <select value={count} onChange={(event) => setCount(Number(event.target.value))} disabled={loading || analyzing || photos.length > 0}>
+                  <option value="20">En iyi 20</option><option value="100">En iyi 100</option>
                 </select>
               </label>
-              <span className="option-separator" />
-              <label className="select-control"><span>AI SEÇİMİ</span>
-                <select value={bestCount} onChange={(event) => setBestCount(Number(event.target.value))} disabled={loading || analyzing}>
-                  <option value="10">En iyi 10</option><option value="20">En iyi 20</option>
-                </select>
-              </label>
-              <span className="search-powered">Google Görseller <b>·</b> SerpApi kotası kullanılır</span>
+              <span className="search-powered">İlk adaylar: seçilen hedef kadar <b>·</b> Ek arama yalnızca gerekirse</span>
             </div>
             <details className="aesthetic-criteria">
               <summary><Icon name="sparkle" size={14} /> AI Aesthetic Ranking · Puanlama kriterleri</summary>
               <div className="criteria-content">
-                <p>Her benzersiz görsel için ölçütler değerlendirilir. Genel puan ölçütlerin ağırlıklı ortalamasıdır:</p>
+                <p>Gemini öncesinde URL, erişim, en az 300 px kısa kenar ve 120.000 toplam piksel çözünürlük ile benzer kopyalar kontrol edilir. Yalnızca geçen benzersiz görseller analiz edilir. Genel puan ağırlıklı ortalamadır:</p>
                 <ul>
-                  <li><span>Arama alaka düzeyi</span><b>%20</b></li>
+                  <li><span>Arama alaka düzeyi</span><b>%15</b></li>
                   <li><span>Netlik</span><b>%15</b></li>
-                  <li><span>Çözünürlük</span><b>%15</b></li>
+                  <li><span>Çözünürlük</span><b>%10</b></li>
                   <li><span>Işık</span><b>%15</b></li>
                   <li><span>Renk uyumu</span><b>%10</b></li>
                   <li><span>Kompozisyon</span><b>%15</b></li>
+                  <li><span>Kadraj / çerçeveleme</span><b>%10</b></li>
                   <li><span>Edit uygunluğu</span><b>%10</b></li>
                 </ul>
-                <p className="criteria-gate">Konu/kişi eşleşmesi ayrıca doğrulanır: eşleşmeyen, belirsiz veya benzer kopya görseller otomatik seçilmez. Benzer görseller ve aynı arama için önbellekte bulunan analizler Gemini isteği oluşturmaz.</p>
+                <p className="criteria-gate">Otomatik seçim için aranan kişi/konu eşleşmeli, güven en az %70 ve estetik puan en az 45/100 olmalıdır. Yeterli sonuç yoksa en fazla bir ek SerpApi sayfası taranır. Benzer görseller ve önbellekteki analizler yeniden Gemini isteği oluşturmaz.</p>
               </div>
             </details>
             <div className="suggestions">
@@ -377,11 +419,13 @@ function App() {
 
           {analyzing && (
             <section className="analysis-progress" aria-live="polite">
-              <div className="progress-top"><div className="progress-title"><span className="progress-sparkle"><Icon name="sparkle" size={17} /></span><strong>{progress.stage === 'preparing' ? 'Görseller karşılaştırılıyor' : 'Gemini görselleri puanlıyor'}</strong></div><span>{progress.stage === 'preparing' ? progress.prepared : progress.completed} / {progress.total}</span></div>
-              <div className="progress-track"><div style={{ width: `${progress.total ? ((progress.stage === 'preparing' ? progress.prepared : progress.completed) / progress.total) * 100 : 0}%` }} /></div>
+              <div className="progress-top"><div className="progress-title"><span className="progress-sparkle"><Icon name="sparkle" size={17} /></span><strong>{progress.stage === 'preparing' ? 'Görseller filtreleniyor' : progress.stage === 'searching' ? 'Ek görseller aranıyor' : 'Gemini görselleri puanlıyor'}</strong></div><span>{progress.stage === 'searching' ? '2. sayfa' : `${progress.stage === 'preparing' ? progress.prepared : progress.completed} / ${progress.total}`}</span></div>
+              <div className="progress-track"><div style={{ width: `${progress.total ? ((progress.stage === 'preparing' ? progress.prepared : progress.stage === 'searching' ? 0 : progress.completed) / progress.total) * 100 : 0}%` }} /></div>
               <p>{progress.stage === 'preparing'
-                ? 'Görseller indiriliyor ve benzer olanlar belirleniyor.'
-                : `Yalnızca farklı görseller için Gemini analizi çalışıyor; ${progress.prepared} görsel tarandı.`}</p>
+                ? 'URL, erişim, çözünürlük ve benzer kopyalar kontrol ediliyor.'
+                : progress.stage === 'searching'
+                  ? 'Yeterli sayıda uygun sonuç bulunamadı; ek Google Görseller sayfası aranıyor.'
+                  : `Yalnızca filtreyi geçen farklı görseller için Gemini analizi çalışıyor; ${progress.prepared} görsel tarandı.`}</p>
             </section>
           )}
 
@@ -493,6 +537,7 @@ function App() {
               {detailPhoto.score !== undefined && <div><dt>Çözünürlük</dt><dd>{detailPhoto.resolution}/100</dd></div>}
               {detailPhoto.score !== undefined && <div><dt>Işık · Renk</dt><dd>{detailPhoto.lighting}/100 · {detailPhoto.colors}/100</dd></div>}
               {detailPhoto.score !== undefined && <div><dt>Kompozisyon · Edit uygunluğu</dt><dd>{detailPhoto.composition}/100 · {detailPhoto.editSuitability}/100</dd></div>}
+              {detailPhoto.score !== undefined && <div><dt>Kadraj / çerçeveleme</dt><dd>{detailPhoto.framing}/100</dd></div>}
               {detailPhoto.reason && <div><dt>AI değerlendirmesi</dt><dd>{detailPhoto.reason}</dd></div>}
               {detailPhoto.duplicateOf && <div><dt>Benzer görsel</dt><dd>Tekrar eden içerik olarak belirlendi.</dd></div>}
               <div><dt>Lisans</dt><dd>{detailPhoto.license || 'Belirtilmemiş; kaynak sayfasında kontrol edin'}</dd></div>

@@ -1,12 +1,15 @@
 export const AESTHETIC_WEIGHTS = Object.freeze({
-  relevance: 20,
+  relevance: 15,
   clarity: 15,
-  resolution: 15,
+  resolution: 10,
   lighting: 15,
   colors: 10,
   composition: 15,
+  framing: 10,
   editSuitability: 10,
 })
+
+export const MIN_AUTO_SELECT_SCORE = 45
 
 export function calculateAestheticScore(analysis) {
   const weightedTotal = Object.entries(AESTHETIC_WEIGHTS).reduce((total, [criterion, weight]) => {
@@ -26,6 +29,7 @@ export function rankAestheticPhotos(photos, bestCount) {
       && !photo.duplicateOf
       && photo.subjectMatch === 'match'
       && photo.subjectConfidence >= 70
+      && photo.score >= MIN_AUTO_SELECT_SCORE
       && selectedCount < bestCount
     if (eligible) selectedCount += 1
     return { ...photo, autoSelected: eligible, selected: eligible }

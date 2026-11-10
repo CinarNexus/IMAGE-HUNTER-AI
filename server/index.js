@@ -18,6 +18,9 @@ dotenv.config({ path: envPath, quiet: true })
 const app = express()
 const port = Number(process.env.PORT) || 3001
 const maxImages = 100
+const maxAnalysisImages = maxImages * 2
+const minImageEdge = 300
+const minImagePixels = 120000
 const maxImageBytes = 15 * 1024 * 1024
 const maxPreparedImageBytes = 48 * 1024 * 1024
 const analysisCacheTtl = 30 * 60 * 1000
@@ -175,7 +178,7 @@ function getAnalysisCacheKey(query, photo) {
   const normalizedQuery = query.trim().toLocaleLowerCase('tr-TR')
   const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash'
   return createHash('sha256')
-    .update(`aesthetic-v1\n${normalizedQuery}\n${model}\n${photo.analysisUrl}`)
+    .update(`aesthetic-v2\n${normalizedQuery}\n${model}\n${photo.analysisUrl}`)
     .digest('hex')
 }
 
@@ -207,6 +210,11 @@ async function preparePhoto(photo, query, job) {
     const cacheKey = getAnalysisCacheKey(query, photo)
     const cached = getCachedAnalysis(cacheKey)
     if (cached) {
+      if (!cached.width || !cached.height
+        || Math.min(cached.width, cached.height) < minImageEdge
+        || cached.width * cached.height < minImagePixels) {
+        throw new Error('Görsel çözünürlüğü minimum kenar ve toplam piksel ölçütünü karşılamıyor.')
+      }
       return {
         photo: {
           ...photo,
@@ -227,6 +235,11 @@ async function preparePhoto(photo, query, job) {
     }
     const { buffer } = await fetchImageBuffer(photo.analysisUrl)
     const metadata = await sharp(buffer).metadata()
+    if (!metadata.width || !metadata.height
+      || Math.min(metadata.width, metadata.height) < minImageEdge
+      || metadata.width * metadata.height < minImagePixels) {
+      throw new Error('Görsel çözünürlüğü minimum kenar ve toplam piksel ölçütünü karşılamıyor.')
+    }
     const normalized = await sharp(buffer)
       .rotate()
       .resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true })
@@ -270,9 +283,9 @@ async function analyzeWithGemini(query, photo, buffer, metadata) {
     'Hedef açıkça bir kişi/ünlü adı içeriyorsa o kişinin görselde gerçekten ve ayırt edilebilir biçimde bulunup bulunmadığını kontrol et. Kimliği başlık veya açıklamadan çıkarma; yalnızca görsel kanıtını kullan. Fotoğraf benzerliği kesin biyometrik kimlik doğrulaması değildir.',
     'Diğer hedeflerde de aranan konu/öznenin görselde gerçekten bulunup bulunmadığını denetle.',
     'subjectMatch alanını yalnızca "match", "mismatch" veya "uncertain" yap. match sadece özne görselde doğrulanabiliyorsa, mismatch hedef görselde yoksa, uncertain görsel kanıtı yetersizse kullan. subjectConfidence, bu görsel kanıtına duyduğun 0-100 güven olsun.',
-    'relevance aramayla görsel alakasını; clarity görseldeki gerçek netliği; resolution verilen piksel ölçüsüne göre çözünürlüğün işe yararlılığını; lighting pozlama ve ışığı; colors renk dengesi/uyumunu; composition kadrajı ve görsel hiyerarşisini; editSuitability kırpma, metin yerleşimi ve video/görsel edit kullanımına uygunluğu puanlar.',
+    'relevance aramayla görsel alakasını; clarity görseldeki gerçek netliği; resolution verilen piksel ölçüsüne göre çözünürlüğün işe yararlılığını; lighting pozlama ve ışığı; colors renk dengesi ve uyumunu; composition görsel hiyerarşisini; framing kadrajı ve çerçevelemeyi; editSuitability kırpma, metin yerleşimi ve video/görsel edit kullanımına uygunluğu puanlar.',
     'Her ölçüt 0-100 tam sayı olmalı. Puanlar doğrudan gözleme dayansın; açıklama tek başına puanı yükseltmesin. reason Türkçe, kısa ve somut bir gerekçe olsun.',
-    'Yalnızca aşağıdaki JSON şemasında yanıt ver: {"subjectMatch":"match|mismatch|uncertain","subjectConfidence":0,"relevance":0,"clarity":0,"resolution":0,"lighting":0,"colors":0,"composition":0,"editSuitability":0,"reason":"..."}',
+    'Yalnızca aşağıdaki JSON şemasında yanıt ver: {"subjectMatch":"match|mismatch|uncertain","subjectConfidence":0,"relevance":0,"clarity":0,"resolution":0,"lighting":0,"colors":0,"composition":0,"framing":0,"editSuitability":0,"reason":"..."}',
   ].join('\n')
 
   const response = await ai.models.generateContent({
@@ -306,6 +319,7 @@ async function analyzeWithGemini(query, photo, buffer, metadata) {
     lighting: boundedScore(parsed.lighting, 'ışık'),
     colors: boundedScore(parsed.colors, 'renk'),
     composition: boundedScore(parsed.composition, 'kompozisyon'),
+    framing: boundedScore(parsed.framing, 'kadraj'),
     editSuitability: boundedScore(parsed.editSuitability, 'edit uygunluğu'),
     reason: parsed.reason.trim().slice(0, 350),
   }
@@ -404,6 +418,7 @@ async function runAnalysis(job) {
     'lighting',
     'colors',
     'composition',
+    'framing',
     'editSuitability',
   ]
   for (const { photo, matchId } of duplicateRows) {
@@ -441,11 +456,15 @@ app.get('/api/search', async (request, response, next) => {
     }
     const query = typeof request.query.query === 'string' ? request.query.query.trim() : ''
     const count = Number(request.query.count)
+    const page = request.query.page === undefined ? 0 : Number(request.query.page)
     if (query.length < 2 || query.length > 120) {
       return response.status(400).json({ error: 'Arama metni 2-120 karakter arasında olmalı.' })
     }
     if (![20, 50, 100].includes(count)) {
       return response.status(400).json({ error: 'Görsel sayısı 20, 50 veya 100 olmalı.' })
+    }
+    if (!Number.isInteger(page) || page < 0 || page > 99) {
+      return response.status(400).json({ error: 'Arama sayfası 0-99 arasında olmalı.' })
     }
 
     const url = new URL('https://serpapi.com/search.json')
@@ -453,6 +472,7 @@ app.get('/api/search', async (request, response, next) => {
     url.searchParams.set('q', query)
     url.searchParams.set('gl', 'tr')
     url.searchParams.set('hl', 'tr')
+    url.searchParams.set('ijn', String(page))
     url.searchParams.set('api_key', process.env.SERPAPI_API_KEY)
 
     const result = await fetch(url, { signal: AbortSignal.timeout(20000) })
@@ -474,7 +494,14 @@ app.get('/api/search', async (request, response, next) => {
       .map(photoFromGoogleResult)
       .filter(Boolean)
       .slice(0, count)
-    return response.json({ query, photos, total: photos.length })
+    const pagination = data.serpapi_pagination || {}
+    return response.json({
+      query,
+      photos,
+      total: photos.length,
+      page,
+      hasMore: Boolean(pagination.next || pagination.next_link),
+    })
   } catch (error) {
     return next(error)
   }
@@ -491,11 +518,11 @@ app.post('/api/analyze', (request, response) => {
   if (typeof query !== 'string' || query.trim().length < 2 || query.trim().length > 120) {
     return response.status(400).json({ error: 'Analiz için geçerli bir arama ifadesi gerekli.' })
   }
-  if (!Array.isArray(photos) || photos.length < 1 || photos.length > maxImages) {
-    return response.status(400).json({ error: `Analiz için 1-${maxImages} arası görsel gönderin.` })
+  if (!Array.isArray(photos) || photos.length < 1 || photos.length > maxAnalysisImages) {
+    return response.status(400).json({ error: `Analiz için 1-${maxAnalysisImages} arası görsel gönderin.` })
   }
-  if (![10, 20].includes(bestCount)) {
-    return response.status(400).json({ error: 'AI seçimi 10 veya 20 görsel olmalı.' })
+  if (![20, 50, 100].includes(bestCount)) {
+    return response.status(400).json({ error: 'AI seçimi 20, 50 veya 100 görsel olmalı.' })
   }
 
   const cleanPhotos = photos.map((photo) => ({

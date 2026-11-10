@@ -10,6 +10,7 @@ function analysis(overrides = {}) {
     lighting: 80,
     colors: 80,
     composition: 80,
+    framing: 80,
     editSuitability: 80,
     ...overrides,
   }
@@ -51,4 +52,13 @@ test('otomatik seçim sonuç sırasına değil en yüksek puana göre yapılır'
 
   assert.deepEqual(ranked.filter((photo) => photo.autoSelected).map((photo) => photo.id), ['highest', 'middle'])
   assert.deepEqual(ranked.slice(0, 2).map((photo) => photo.id), ['mismatch', 'highest'])
+})
+
+test('45 altı estetik puanı otomatik seçim için yetersiz sayılır', () => {
+  const ranked = rankAestheticPhotos([
+    { id: 'below-threshold', score: 44, subjectMatch: 'match', subjectConfidence: 100 },
+    { id: 'at-threshold', score: 45, subjectMatch: 'match', subjectConfidence: 100 },
+  ], 20)
+
+  assert.deepEqual(ranked.filter((photo) => photo.autoSelected).map((photo) => photo.id), ['at-threshold'])
 })

@@ -102,6 +102,13 @@ test('SerpApi sonuçları 20, 50 ve 100 görsel sınırına göre döndürülür
     assert.equal(data.photos[0].sourceUrl, 'https://source.example.com/image/1')
     assert.equal(data.photos[0].previewUrl, 'https://encrypted-tbn0.gstatic.com/images?image=1')
   }
+
+  const nextPage = await fetch(`${baseUrl}/api/search?query=deneme&count=20&page=1`)
+  const nextData = await nextPage.json()
+  assert.equal(nextPage.status, 200)
+  assert.equal(nextData.page, 1)
+  assert.equal(nextData.hasMore, false)
+  assert.equal(nextData.photos[0].alt, 'deneme image 101')
 })
 
 test('SerpApi anahtarının değeri health yanıtında açıklanmaz', async () => {
@@ -130,13 +137,30 @@ test('AI analizi doğrular, yakın kopyaları ve tekrarlanan sorguları yeniden 
     sourceUrl: `https://source.example.com/image/${id}`,
     sourceName: 'Test source',
     alt: 'Celebrity at an event',
-  }))
+  })).concat([
+    {
+      id: 'low-resolution',
+      imageUrl: 'https://8.8.8.8/small.png',
+      analysisUrl: 'https://8.8.8.8/small.png',
+      previewUrl: 'https://8.8.8.8/small.png',
+      sourceUrl: 'https://source.example.com/image/small',
+      alt: 'Celebrity at an event',
+    },
+    {
+      id: 'unavailable',
+      imageUrl: 'https://8.8.8.8/broken.png',
+      analysisUrl: 'https://8.8.8.8/broken.png',
+      previewUrl: 'https://8.8.8.8/broken.png',
+      sourceUrl: 'https://source.example.com/image/broken',
+      alt: 'Celebrity at an event',
+    },
+  ])
 
-  async function analyze() {
+  async function analyze(bestCount = 20) {
     const response = await fetch(`${baseUrl}/api/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: 'Famous Actor', bestCount: 10, photos }),
+      body: JSON.stringify({ query: 'Famous Actor', bestCount, photos }),
     })
     assert.equal(response.status, 202)
     const { jobId } = await response.json()
@@ -154,15 +178,17 @@ test('AI analizi doğrular, yakın kopyaları ve tekrarlanan sorguları yeniden 
   }
 
   const first = await analyze()
-  assert.equal(first.photos.length, 2)
+  assert.equal(first.photos.length, 4)
   assert.equal(first.autoSelected, 1)
   assert.equal(first.photos[0].subjectMatch, 'match')
   assert.equal(first.photos[0].subjectConfidence, 96)
-  assert.equal(first.photos[0].score, 84)
+  assert.equal(first.photos[0].score, 85)
   assert.equal(first.photos.find((photo) => photo.duplicateOf)?.selected, false)
+  assert.match(first.photos.find((photo) => photo.id === 'low-resolution').analysisError, /çözünürlüğü/)
+  assert.match(first.photos.find((photo) => photo.id === 'unavailable').analysisError, /HTTP 404/)
   assert.equal(geminiRequests, 1)
 
-  const second = await analyze()
+  const second = await analyze(100)
   assert.equal(second.autoSelected, 1)
   assert.equal(geminiRequests, 1)
 })
