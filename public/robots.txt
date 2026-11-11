@@ -1,0 +1,4 @@
+﻿User-agent: *
+Allow: /
+
+Sitemap: https://image-hunter-ai-1.onrender.com/sitemap.xml
