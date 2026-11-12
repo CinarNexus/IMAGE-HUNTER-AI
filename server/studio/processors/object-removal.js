@@ -1,10 +1,13 @@
 import sharp from 'sharp'
-import { invalid, positiveInteger } from './common.js'
+import { boundedNumber, invalid, positiveInteger } from './common.js'
+import { withOpenCv } from './opencv-runtime.js'
 
 const maxInpaintPixels = 4_000_000
+const maxPreviewInpaintPixels = 1_200_000
 const maxMaskBytes = 1_000_000
+const maxImagePixels = 20_000_000
 
-export async function removeMaskedObject(input, options = {}) {
+function readMaskBuffer(options) {
   if (typeof options.mask !== 'string') invalid('Nesne silmek için fırçayla bir maske çizmelisiniz.')
   const encoded = options.mask.replace(/^data:image\/png;base64,/, '')
   if (!/^[\da-z+/]+=*$/i.test(encoded) || encoded.length > maxMaskBytes * 1.4) {
@@ -12,6 +15,10 @@ export async function removeMaskedObject(input, options = {}) {
   }
   const maskBuffer = Buffer.from(encoded, 'base64')
   if (!maskBuffer.length || maskBuffer.length > maxMaskBytes) invalid('Maske dosyası geçersiz veya çok büyük.')
+  return maskBuffer
+}
+
+async function createInpaintingMasks(maskBuffer, width, height, options, includeSoftened = true) {
   let maskMetadata
   try {
     maskMetadata = await sharp(maskBuffer, { limitInputPixels: 2_000_000 }).metadata()
@@ -20,76 +27,208 @@ export async function removeMaskedObject(input, options = {}) {
   }
   if (maskMetadata.format !== 'png' || maskMetadata.pages > 1) invalid('Maske tek kare PNG olmalıdır.')
 
-  const oriented = await sharp(input, { limitInputPixels: 20_000_000 }).rotate().png().toBuffer()
-  const { width: sourceWidth, height: sourceHeight } = await sharp(oriented).metadata()
-  const scale = Math.min(1, Math.sqrt(maxInpaintPixels / (sourceWidth * sourceHeight)))
-  const width = Math.max(1, Math.round(sourceWidth * scale))
-  const height = Math.max(1, Math.round(sourceHeight * scale))
-  const { data: pixels, info } = await sharp(oriented)
+  const dilation = boundedNumber(options.dilation, 'Maske genişletme', 0, 30, 4)
+  const feather = boundedNumber(options.feather, 'Kenar yumuşatma', 0, 30, 5)
+  const sourceMask = await sharp(maskBuffer, { limitInputPixels: 2_000_000 })
     .resize(width, height, { fit: 'fill' })
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true })
-  const mask = await sharp(maskBuffer, { limitInputPixels: 2_000_000 })
-    .resize(width, height, { fit: 'fill' })
+    .flatten({ background: '#000000' })
+    .removeAlpha()
     .greyscale()
     .raw()
     .toBuffer()
-  const count = width * height
-  const queue = new Uint32Array(count)
-  const visited = new Uint8Array(count)
-  let head = 0
-  let tail = 0
   let maskedPixels = 0
-
-  for (let index = 0; index < count; index += 1) {
-    if (mask[index] > 64) maskedPixels += 1
+  for (const value of sourceMask) {
+    if (value > 64) maskedPixels += 1
   }
+  const count = width * height
   if (!maskedPixels) invalid('Maske boş; silmek istediğiniz bölgeyi fırçayla işaretleyin.')
-  if (maskedPixels >= count) invalid('Görselin tamamı maskelenemez; bir miktar alanı maskesiz bırakın.')
+  if (maskedPixels >= count * 0.8) invalid('Silinecek alan görselin %80’inden büyük olamaz.')
 
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const index = y * width + x
-      if (mask[index] > 64) continue
-      const touchesMask = (x > 0 && mask[index - 1] > 64)
-        || (x + 1 < width && mask[index + 1] > 64)
-        || (y > 0 && mask[index - width] > 64)
-        || (y + 1 < height && mask[index + width] > 64)
-      if (!touchesMask) continue
-      visited[index] = 1
-      queue[tail++] = index
+  const masks = await withOpenCv(async (cv) => {
+    const maskMat = new cv.Mat(height, width, cv.CV_8UC1)
+    const binary = new cv.Mat()
+    let dilated
+    let kernel
+    let softened
+    try {
+      maskMat.data.set(sourceMask)
+      cv.threshold(maskMat, binary, 64, 255, cv.THRESH_BINARY)
+      if (dilation > 0) {
+        kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(dilation * 2 + 1, dilation * 2 + 1))
+        dilated = new cv.Mat()
+        cv.dilate(binary, dilated, kernel)
+      } else {
+        dilated = binary
+      }
+      if (feather > 0 && includeSoftened) {
+        softened = new cv.Mat()
+        cv.GaussianBlur(dilated, softened, new cv.Size(0, 0), feather)
+      } else if (includeSoftened) {
+        softened = dilated
+      }
+      return {
+        binary: Buffer.from(dilated.data),
+        ...(includeSoftened ? { softened: Buffer.from(softened.data) } : {}),
+      }
+    } finally {
+      maskMat.delete()
+      if (dilated && dilated !== binary) dilated.delete()
+      binary.delete()
+      kernel?.delete()
+      if (softened && softened !== dilated) softened.delete()
     }
-  }
+  })
 
-  while (head < tail) {
-    const index = queue[head++]
-    const neighbors = [
-      index % width > 0 ? index - 1 : -1,
-      index % width + 1 < width ? index + 1 : -1,
-      index >= width ? index - width : -1,
-      index + width < count ? index + width : -1,
-    ]
-    for (const neighbor of neighbors) {
-      if (neighbor < 0 || mask[neighbor] <= 64 || visited[neighbor]) continue
-      const source = index * info.channels
-      const target = neighbor * info.channels
-      pixels[target] = pixels[source]
-      pixels[target + 1] = pixels[source + 1]
-      pixels[target + 2] = pixels[source + 2]
-      pixels[target + 3] = 255
-      mask[neighbor] = 0
-      visited[neighbor] = 1
-      queue[tail++] = neighbor
-    }
-  }
+  return { dilation, feather, ...masks }
+}
 
-  const filled = await sharp(pixels, { raw: info }).png().toBuffer()
-  if (width === sourceWidth && height === sourceHeight) return filled
-  return sharp(filled)
-    .resize(sourceWidth, sourceHeight, { fit: 'fill', kernel: 'lanczos3' })
+async function prepareInpainting(input, options, pixelLimit = maxInpaintPixels) {
+  const maskBuffer = readMaskBuffer(options)
+
+  const radius = boundedNumber(options.radius, 'Doldurma yarıçapı', 1, 10, 3)
+  const oriented = await sharp(input, { limitInputPixels: maxImagePixels })
+    .rotate()
+    .toColourspace('srgb')
     .png()
     .toBuffer()
+  const {
+    width: sourceWidth,
+    height: sourceHeight,
+    channels: sourceChannels,
+  } = await sharp(oriented).metadata()
+  if (sourceWidth * sourceHeight > maxImagePixels) invalid('Görsel 20 megapiksel sınırını aşıyor.')
+  const scale = Math.min(1, Math.sqrt(pixelLimit / (sourceWidth * sourceHeight)))
+  const width = Math.max(1, Math.floor(sourceWidth * scale))
+  const height = Math.max(1, Math.floor(sourceHeight * scale))
+  const { data: pixels } = await sharp(oriented)
+    .resize(width, height, { fit: 'fill' })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+  const masks = await createInpaintingMasks(maskBuffer, width, height, options)
+
+  return {
+    oriented,
+    pixels,
+    width,
+    height,
+    sourceWidth,
+    sourceHeight,
+    hasAlpha: sourceChannels === 4,
+    radius,
+    ...masks,
+  }
+}
+
+export async function createEffectiveMaskPreview(input, options = {}) {
+  const maskBuffer = readMaskBuffer(options)
+  let metadata
+  try {
+    metadata = await sharp(input, { limitInputPixels: maxImagePixels, failOn: 'error' }).metadata()
+  } catch {
+    invalid('Kaynak görsel okunamadı; lütfen görseli yeniden yükleyin.')
+  }
+  const swapDimensions = metadata.orientation >= 5 && metadata.orientation <= 8
+  const sourceWidth = swapDimensions ? metadata.height : metadata.width
+  const sourceHeight = swapDimensions ? metadata.width : metadata.height
+  if (!sourceWidth || !sourceHeight || sourceWidth * sourceHeight > maxImagePixels) {
+    invalid('Görsel 20 megapiksel sınırını aşıyor.')
+  }
+  const scale = Math.min(1, Math.sqrt(maxPreviewInpaintPixels / (sourceWidth * sourceHeight)))
+  const width = Math.max(1, Math.floor(sourceWidth * scale))
+  const height = Math.max(1, Math.floor(sourceHeight * scale))
+  const { binary } = await createInpaintingMasks(maskBuffer, width, height, options, false)
+  return sharp(binary, { raw: { width, height, channels: 1 } }).png().toBuffer()
+}
+
+async function compositeAtOriginalResolution(output, prepared) {
+  const processed = await sharp(output, {
+    raw: { width: prepared.width, height: prepared.height, channels: 3 },
+  })
+    .resize(prepared.sourceWidth, prepared.sourceHeight, { fit: 'fill', kernel: 'lanczos3' })
+    .png()
+    .toBuffer()
+  const alphaMask = await sharp(prepared.softened, {
+    raw: { width: prepared.width, height: prepared.height, channels: 1 },
+  })
+    .resize(prepared.sourceWidth, prepared.sourceHeight, { fit: 'fill' })
+    .png()
+    .toBuffer()
+  const overlay = await sharp(processed).joinChannel(alphaMask).png().toBuffer()
+  let composite = sharp(prepared.oriented, { limitInputPixels: maxImagePixels })
+    .composite([{ input: overlay }])
+  if (!prepared.hasAlpha) composite = composite.removeAlpha()
+  return composite.png().toBuffer()
+}
+
+export async function removeMaskedObject(input, options = {}) {
+  const prepared = await prepareInpainting(input, options)
+  const output = await withOpenCv(async (cv) => {
+    const source = new cv.Mat(prepared.height, prepared.width, cv.CV_8UC3)
+    const mask = new cv.Mat(prepared.height, prepared.width, cv.CV_8UC1)
+    const filled = new cv.Mat()
+    try {
+      source.data.set(prepared.pixels)
+      mask.data.set(prepared.binary)
+      cv.inpaint(source, mask, filled, prepared.radius, cv.INPAINT_TELEA)
+      const composite = new Uint8Array(prepared.pixels.length)
+      for (let pixel = 0; pixel < prepared.width * prepared.height; pixel += 1) {
+        const alpha = prepared.softened[pixel] / 255
+        const offset = pixel * 3
+        for (let channel = 0; channel < 3; channel += 1) {
+          composite[offset + channel] = Math.round(
+            prepared.pixels[offset + channel] * (1 - alpha)
+            + filled.data[offset + channel] * alpha,
+          )
+        }
+      }
+      return Buffer.from(composite)
+    } finally {
+      source.delete()
+      mask.delete()
+      filled.delete()
+    }
+  })
+  return compositeAtOriginalResolution(output, prepared)
+}
+
+export async function removeObjectWithLama(input, options = {}, inpaint) {
+  if (typeof inpaint !== 'function') {
+    const error = new Error('LaMa servisi yapılandırılmamış. Klasik Telea seçeneğini belirleyebilirsiniz.')
+    error.statusCode = 503
+    throw error
+  }
+  const prepared = await prepareInpainting(
+    input,
+    options,
+    options.preview ? maxPreviewInpaintPixels : maxInpaintPixels,
+  )
+  const image = await sharp(prepared.pixels, {
+    raw: { width: prepared.width, height: prepared.height, channels: 3 },
+  }).png().toBuffer()
+  const mask = await sharp(prepared.binary, {
+    raw: { width: prepared.width, height: prepared.height, channels: 1 },
+  }).png().toBuffer()
+  const output = await inpaint(image, mask, { dilation: 0, feather: 0 })
+  let metadata
+  try {
+    metadata = await sharp(output, {
+      limitInputPixels: maxInpaintPixels,
+      failOn: 'error',
+    }).metadata()
+  } catch {
+    throw new Error('LaMa servisi geçersiz bir görsel sonucu döndürdü.')
+  }
+  if (metadata.format !== 'png' || metadata.width !== prepared.width || metadata.height !== prepared.height) {
+    throw new Error('LaMa sonucu beklenen görsel boyutlarıyla eşleşmiyor.')
+  }
+  const { data, info } = await sharp(output)
+    .removeAlpha()
+    .toColourspace('srgb')
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+  if (info.channels !== 3) throw new Error('LaMa sonucu geçerli RGB görseli değil.')
+  return compositeAtOriginalResolution(data, prepared)
 }
 
 export function validateMaskDimensions(width, height) {

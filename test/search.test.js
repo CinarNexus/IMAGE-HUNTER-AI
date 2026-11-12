@@ -331,9 +331,16 @@ test('Studio düzenleme güvenli şekilde hatalı ayar, format ve yükleme kimli
 })
 
 test('Studio araç API’leri gerçek önizleme ve dışa aktarma çıktısı üretir', async () => {
-  const image = await sharp({
+  const imageBackground = await sharp({
     create: { width: 96, height: 72, channels: 3, background: { r: 32, g: 84, b: 142 } },
   }).png().toBuffer()
+  const foregroundShape = await sharp({
+    create: { width: 32, height: 42, channels: 3, background: { r: 220, g: 50, b: 35 } },
+  }).png().toBuffer()
+  const image = await sharp(imageBackground)
+    .composite([{ input: foregroundShape, left: 32, top: 15 }])
+    .png()
+    .toBuffer()
   const uploadResponse = await fetch(`${baseUrl}/api/studio/uploads`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/octet-stream' },
@@ -341,6 +348,16 @@ test('Studio araç API’leri gerçek önizleme ve dışa aktarma çıktısı ü
   })
   assert.equal(uploadResponse.status, 201)
   const { upload } = await uploadResponse.json()
+  const backgroundImage = await sharp({
+    create: { width: 40, height: 30, channels: 3, background: { r: 30, g: 220, b: 45 } },
+  }).png().toBuffer()
+  const backgroundUploadResponse = await fetch(`${baseUrl}/api/studio/uploads`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: backgroundImage,
+  })
+  assert.equal(backgroundUploadResponse.status, 201)
+  const { upload: backgroundUpload } = await backgroundUploadResponse.json()
   const mask = await sharp({
     create: { width: 16, height: 12, channels: 3, background: { r: 0, g: 0, b: 0 } },
   }).composite([{
@@ -348,12 +365,26 @@ test('Studio araç API’leri gerçek önizleme ve dışa aktarma çıktısı ü
     left: 6,
     top: 4,
   }]).png().toBuffer()
+  const segmentationMaskData = Buffer.alloc(96 * 72 * 3)
+  for (let y = 28; y < 44; y += 1) {
+    for (let x = 43; x < 53; x += 1) segmentationMaskData[(y * 96 + x) * 3 + 1] = 255
+  }
+  for (let y = 2; y < 8; y += 1) {
+    for (let x = 2; x < 8; x += 1) segmentationMaskData[(y * 96 + x) * 3] = 255
+  }
+  const segmentationMask = await sharp(segmentationMaskData, {
+    raw: { width: 96, height: 72, channels: 3 },
+  }).png().toBuffer()
   const tools = [
     ['background-removal', {}],
     ['image-enhancement', { scale: 2, sharpness: 0 }],
     ['sharpening', { amount: 40, sigma: 1 }],
     ['object-removal', { mask: mask.toString('base64') }],
-    ['background-replacement', { backgroundColor: '#eef4ff' }],
+    ['background-replacement', {
+      backgroundMode: 'upload',
+      backgroundUploadId: backgroundUpload.id,
+      segmentationMask: segmentationMask.toString('base64'),
+    }],
     ['smart-crop', { ratio: '4:5', width: 100 }],
     ['color-light-correction', {
       format: 'png',
@@ -380,6 +411,23 @@ test('Studio araç API’leri gerçek önizleme ve dışa aktarma çıktısı ü
       }
     }
 
+    const invalidBackgroundUpload = await fetch(`${baseUrl}/api/studio/uploads/${upload.id}/tools/background-replacement/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ options: {
+        backgroundMode: 'upload',
+        backgroundUploadId: 'not-a-valid-upload-id',
+      } }),
+    })
+    assert.equal(invalidBackgroundUpload.status, 404)
+
+    const rawBackground = await fetch(`${baseUrl}/api/studio/uploads/${upload.id}/tools/background-replacement/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ options: { backgroundBuffer: backgroundImage.toString('base64') } }),
+    })
+    assert.equal(rawBackground.status, 400)
+
     const disabledTool = await fetch(`${baseUrl}/api/studio/uploads/${upload.id}/tools/not-enabled/export`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -390,6 +438,7 @@ test('Studio araç API’leri gerçek önizleme ve dışa aktarma çıktısı ü
     assert.deepEqual(Buffer.from(await unchangedResponse.arrayBuffer()), image)
   } finally {
     await fetch(`${baseUrl}${upload.previewUrl}`, { method: 'DELETE' })
+    await fetch(`${baseUrl}${backgroundUpload.previewUrl}`, { method: 'DELETE' })
   }
 })
 

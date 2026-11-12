@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&display=swap');
 #root { min-height: 100vh; }
 
 .cinematic-intro {
@@ -24,9 +25,11 @@
 .cinematic-intro-overline,.cinematic-intro-edition { color: #ad9ac8; font-size: 8px; font-weight: 700; letter-spacing: .28em; }
 .cinematic-intro-edition { color: #756587; font-size: 7px; }
 @keyframes cinematic-intro-fade {
+
   0% { opacity: 0; }
   10%, 82% { opacity: 1; }
   100% { opacity: 0; visibility: hidden; }
+  
 }
 @keyframes intro-mark-draw { to { stroke-dashoffset: 0; } }
 @keyframes intro-wordmark-in { to { opacity: 1; transform: translateY(0); } }
@@ -51,7 +54,48 @@
   --green: #44d5a0;
   --shadow: 0 24px 70px rgba(0, 0, 0, .4), 0 0 35px rgba(128, 62, 197, .09);
 }
+/* IRONSS el yazısı açılış imzası */
+.cinematic-intro-signature {
+  width: 115px;
+  margin-top: -8px;
+  color: #c58bff;
+  filter: drop-shadow(0 0 5px rgba(168, 85, 247, .5));
+  opacity: 0;
+  animation: ironss-signature-in .2s 2.15s ease forwards;
+}
 
+.cinematic-intro-signature svg {
+  width: 100%;
+  overflow: visible;
+}
+
+.cinematic-intro-signature path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation:
+    ironss-signature-draw .85s 2.2s ease forwards,
+    ironss-signature-glow .5s 3.05s ease forwards;
+}
+
+@keyframes ironss-signature-in {
+  to { opacity: 1; }
+}
+
+@keyframes ironss-signature-draw {
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes ironss-signature-glow {
+  to {
+    filter: drop-shadow(0 0 5px #c58bff)
+            drop-shadow(0 0 13px #9333ea);
+  }
+}
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .48; }
 .app-shell { display: flex; min-height: 100vh; color: var(--text); background: var(--bg); }
@@ -640,4 +684,93 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   .cinematic-intro { display: none; }
   .hero-copy-block,.hero-visual,.value-card,.photo-card,.error-banner,.detail-modal,.toast { animation: none; }
   .value-card:hover,.nav-item:hover:not(:disabled),.photo-card:hover { transform: none; }
+}
+
+
+
+@media (max-width: 600px) {
+  .ironss-signature {
+    width: 125px;
+  }
+}
+/* IRONSS el yazısı açılış imzası */
+.cinematic-intro-signature {
+  width: 115px;
+  margin-top: -8px;
+  color: #c58bff;
+  filter: drop-shadow(0 0 5px rgba(168, 85, 247, .5));
+  opacity: 0;
+  animation: ironss-signature-in .2s 2.15s ease forwards;
+}
+
+.cinematic-intro-signature svg {
+  width: 100%;
+  overflow: visible;
+}
+
+.cinematic-intro-signature path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation:
+    ironss-signature-draw .85s 2.2s ease forwards,
+    ironss-signature-glow .5s 3.05s ease forwards;
+}
+
+@keyframes ironss-signature-in {
+  to { opacity: 1; }
+}
+
+@keyframes ironss-signature-draw {
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes ironss-signature-glow {
+  to {
+    filter: drop-shadow(0 0 5px #c58bff)
+            drop-shadow(0 0 13px #9333ea);
+  }
+}
+.ironss-signature-text {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+  color: #c58bff;
+  filter: drop-shadow(0 0 5px rgba(197, 139, 255, .65))
+          drop-shadow(0 0 12px rgba(147, 51, 234, .45));
+}
+
+.cinematic-intro-signature .ironss-signature-text {
+  animation: ironss-signature-in .5s 2.15s ease both;
+}
+
+@keyframes ironss-signature-in {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.cinematic-intro-signature .ironss-writing {
+  stroke-dasharray: 650;
+  stroke-dashoffset: 650;
+  fill: transparent;
+  animation: ironss-handwriting 3s ease 2.2s forwards;
+}
+
+@keyframes ironss-handwriting {
+  to {
+    stroke-dashoffset: 0;
+    fill: currentColor;
+    filter: drop-shadow(0 0 10px currentColor);
+  }
 }

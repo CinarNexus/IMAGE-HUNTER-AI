@@ -14,6 +14,8 @@ dist-ssr
 .env
 .env.*
 !.env.example
+.lama-venv/
+.models/
 
 # Editor directories and files
 .vscode/*

@@ -7,8 +7,10 @@ import {
   STUDIO_UPLOAD_LIMITS,
 } from './config.js'
 import { mimeForFormat, parseFormat, validJsonObject } from './processors/common.js'
+import { createEffectiveMaskPreview } from './processors/object-removal.js'
 import { processStudioTool } from './processors/registry.js'
 import { TemporaryUploadStore } from './storage.js'
+import { lamaService as defaultLamaService } from './lama-service.js'
 
 function httpError(message, statusCode) {
   const error = new Error(message)
@@ -20,6 +22,27 @@ function setPrivateResponseHeaders(response) {
   response.setHeader('Cache-Control', 'no-store')
   response.setHeader('X-Content-Type-Options', 'nosniff')
   response.setHeader('Content-Security-Policy', "default-src 'none'; sandbox")
+}
+
+function createRequestCancellation(request, response) {
+  const controller = new AbortController()
+  const abort = () => {
+    if (!controller.signal.aborted) {
+      controller.abort(new DOMException('İstemci isteği iptal etti.', 'AbortError'))
+    }
+  }
+  const onResponseClose = () => {
+    if (!response.writableEnded) abort()
+  }
+  request.once('aborted', abort)
+  response.once('close', onResponseClose)
+  return {
+    signal: controller.signal,
+    dispose() {
+      request.removeListener('aborted', abort)
+      response.removeListener('close', onResponseClose)
+    },
+  }
 }
 
 function validateAdjustments(value) {
@@ -105,7 +128,10 @@ function zipImages(images) {
 const maxBatchPixels = 25_000_000
 const maxBatchOutputBytes = 75 * 1024 * 1024
 
-export function createStudioRouter({ uploadStore = new TemporaryUploadStore() } = {}) {
+export function createStudioRouter({
+  uploadStore = new TemporaryUploadStore(),
+  lamaService = defaultLamaService,
+} = {}) {
   const router = Router()
   let initialized
   const ensureInitialized = () => {
@@ -115,6 +141,28 @@ export function createStudioRouter({ uploadStore = new TemporaryUploadStore() } 
   const uploadParser = express.raw({
     type: 'application/octet-stream',
     limit: STUDIO_UPLOAD_LIMITS.maxFileBytes,
+  })
+
+  router.get('/lama/status', async (_request, response, next) => {
+    try {
+      response.setHeader('Cache-Control', 'no-store')
+      const status = typeof lamaService.statusSnapshot === 'function'
+        ? await lamaService.statusSnapshot()
+        : lamaService.status()
+      return response.json(status)
+    } catch (error) {
+      return next(error)
+    }
+  })
+
+  router.post('/lama/start', async (request, response, next) => {
+    try {
+      await lamaService.start()
+      response.setHeader('Cache-Control', 'no-store')
+      return response.json(lamaService.status())
+    } catch (error) {
+      return next(error)
+    }
   })
 
   router.post('/batch-export', async (request, response, next) => {
@@ -269,20 +317,58 @@ export function createStudioRouter({ uploadStore = new TemporaryUploadStore() } 
     }
   })
 
+  router.post('/uploads//tools/:tool/preview', (_request, response) => {
+    return response.status(400).json({ error: 'Önizleme için yükleme kimliği eksik. Görseli yeniden yükleyin.' })
+  })
+
+  router.post('/uploads/:id/tools/object-removal/mask-preview', async (request, response, next) => {
+    try {
+      await ensureInitialized()
+      const ownerId = request.socket.remoteAddress || 'anonymous'
+      const payload = validJsonObject(request.body, 'Maske önizleme isteği')
+      const options = validJsonObject(payload.options, 'Maske ayarları')
+      const input = await uploadStore.getBuffer(request.params.id, ownerId)
+      if (!input) return response.status(404).json({ error: 'Yükleme bulunamadı veya süresi doldu.' })
+      const output = await createEffectiveMaskPreview(input, options)
+      setPrivateResponseHeaders(response)
+      response.setHeader('Content-Type', 'image/png')
+      response.setHeader('Content-Length', String(output.length))
+      return response.send(output)
+    } catch (error) {
+      return next(error)
+    }
+  })
+
   router.post('/uploads/:id/tools/:tool/preview', async (request, response, next) => {
+    const cancellation = createRequestCancellation(request, response)
     try {
       await ensureInitialized()
       const ownerId = request.socket.remoteAddress || 'anonymous'
       const payload = validJsonObject(request.body, 'Araç isteği')
       const options = validJsonObject(payload.options, 'Araç ayarları')
+      if (Object.hasOwn(options, 'backgroundBuffer')) throw httpError('Arka plan görseli yalnızca yükleme kimliğiyle belirtilmelidir.', 400)
       const input = await uploadStore.getBuffer(request.params.id, ownerId)
       if (!input) return response.status(404).json({ error: 'Yükleme bulunamadı veya süresi doldu.' })
+      const { backgroundUploadId, ...safeOptions } = options
+      const backgroundBuffer = backgroundUploadId
+        ? await uploadStore.getBuffer(backgroundUploadId, ownerId)
+        : undefined
+      if (backgroundUploadId && !backgroundBuffer) {
+        return response.status(404).json({ error: 'Arka plan görseli bulunamadı veya süresi doldu.' })
+      }
       const result = await processStudioTool(request.params.tool, input, {
-        ...options,
+        ...safeOptions,
+        preview: true,
+        ...(backgroundBuffer ? { backgroundBuffer } : {}),
         applyColor: (image) => encodeImage(
           createAdjustedImage(image, validateAdjustments(options.adjustments)),
           parseFormat(options.format || 'png'),
         ),
+      }, {
+        runLama: (image, mask, settings) => lamaService.inpaint(image, mask, {
+          ...settings,
+          signal: cancellation.signal,
+        }),
       })
       const output = await sharp(result.buffer, {
         limitInputPixels: STUDIO_UPLOAD_LIMITS.maxPixels,
@@ -298,7 +384,9 @@ export function createStudioRouter({ uploadStore = new TemporaryUploadStore() } 
       response.setHeader('Content-Length', String(output.length))
       return response.send(output)
     } catch (error) {
-      return next(error)
+      if (!cancellation.signal.aborted) return next(error)
+    } finally {
+      cancellation.dispose()
     }
   })
 
@@ -308,14 +396,25 @@ export function createStudioRouter({ uploadStore = new TemporaryUploadStore() } 
       const ownerId = request.socket.remoteAddress || 'anonymous'
       const payload = validJsonObject(request.body, 'Araç isteği')
       const options = validJsonObject(payload.options, 'Araç ayarları')
+      if (Object.hasOwn(options, 'backgroundBuffer')) throw httpError('Arka plan görseli yalnızca yükleme kimliğiyle belirtilmelidir.', 400)
       const input = await uploadStore.getBuffer(request.params.id, ownerId)
       if (!input) return response.status(404).json({ error: 'Yükleme bulunamadı veya süresi doldu.' })
+      const { backgroundUploadId, ...safeOptions } = options
+      const backgroundBuffer = backgroundUploadId
+        ? await uploadStore.getBuffer(backgroundUploadId, ownerId)
+        : undefined
+      if (backgroundUploadId && !backgroundBuffer) {
+        return response.status(404).json({ error: 'Arka plan görseli bulunamadı veya süresi doldu.' })
+      }
       const result = await processStudioTool(request.params.tool, input, {
-        ...options,
+        ...safeOptions,
+        ...(backgroundBuffer ? { backgroundBuffer } : {}),
         applyColor: (image) => encodeImage(
           createAdjustedImage(image, validateAdjustments(options.adjustments)),
           parseFormat(options.format || 'png'),
         ),
+      }, {
+        runLama: (image, mask, settings) => lamaService.inpaint(image, mask, settings),
       })
       if (!Buffer.isBuffer(result.buffer) || result.buffer.length === 0) {
         throw httpError('Araç geçerli bir görsel çıktısı üretemedi.', 500)

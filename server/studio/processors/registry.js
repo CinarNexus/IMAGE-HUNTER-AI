@@ -1,8 +1,8 @@
 import { removeSolidBackground } from './background-removal.js'
-import { replaceSolidBackground } from './background-replacement.js'
+import { replaceBackground } from './background-replacement.js'
 import { addGlow } from './glow-effects.js'
 import { enhanceImage } from './image-enhancement.js'
-import { removeMaskedObject } from './object-removal.js'
+import { removeMaskedObject, removeObjectWithLama } from './object-removal.js'
 import { sharpenImage } from './sharpening.js'
 import { smartCrop } from './smart-crop.js'
 import { createThumbnail } from './thumbnail.js'
@@ -21,14 +21,18 @@ const imageTools = Object.freeze({
     buffer: await sharpenImage(input, options),
     format: 'png',
   }),
-  'object-removal': async (input, options) => ({
-    buffer: await removeMaskedObject(input, options),
-    format: 'png',
-  }),
-  'background-replacement': async (input, options) => ({
-    buffer: await replaceSolidBackground(input, options),
-    format: 'png',
-  }),
+  'object-removal': async (input, options, dependencies = {}) => {
+    let buffer
+    if (options.engine === 'lama') {
+      buffer = await removeObjectWithLama(input, options, dependencies.runLama)
+    } else if (options.engine === undefined || options.engine === 'telea') {
+      buffer = await removeMaskedObject(input, options)
+    } else {
+      invalid('Nesne silme motoru geçersiz.')
+    }
+    return { buffer, format: 'png' }
+  },
+  'background-replacement': replaceBackground,
   'smart-crop': async (input, options) => ({
     buffer: await smartCrop(input, options),
     format: 'png',
@@ -44,8 +48,8 @@ const imageTools = Object.freeze({
   }),
 })
 
-export async function processStudioTool(tool, input, options = {}) {
+export async function processStudioTool(tool, input, options = {}, dependencies = {}) {
   const processor = imageTools[tool]
   if (!processor) invalid('Bu araç henüz etkin değil.')
-  return processor(input, options)
+  return processor(input, options, dependencies)
 }

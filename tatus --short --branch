@@ -1,0 +1,19 @@
+warning: in the working copy of '.gitignore', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'package-lock.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'package.json', LF will be replaced by CRLF the next time Git touches it
+ .gitignore                                         |   2 [32m+[m
+ README.md                                          |  12 [32m+[m[31m-[m
+ package-lock.json                                  |   7 [32m+[m
+ package.json                                       |   2 [32m+[m
+ server/index.js                                    |  13 [32m+[m
+ server/studio/processors/background-replacement.js | 238 [32m++++++[m[31m-[m
+ server/studio/processors/object-removal.js         | 253 [32m+++++[m[31m--[m
+ server/studio/processors/registry.js               |  28 [32m+[m[31m-[m
+ server/studio/router.js                            | 107 [32m++[m[31m-[m
+ src/App.css                                        | 318 [32m++++++++[m[31m-[m
+ src/App.jsx                                        |  32 [32m+[m[31m-[m
+ src/Studio.css                                     | 378 [32m+++++++++++[m
+ src/Studio.jsx                                     | 734 [32m+++++++++++++++++++[m[31m--[m
+ test/search.test.js                                |  53 [32m+[m[31m-[m
+ test/studio-processors.test.js                     | 182 [32m++++[m[31m-[m
+ 15 files changed, 2164 insertions(+), 195 deletions(-)

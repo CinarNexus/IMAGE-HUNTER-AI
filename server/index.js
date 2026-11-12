@@ -717,6 +717,7 @@ app.post('/api/download', async (request, response) => {
 })
 
 app.use((error, _request, response, _next) => {
+  if (error.statusCode === 499 || error.name === 'AbortError') return
   console.error('API request failed:', error)
   if (response.headersSent) return response.end()
   if (error.statusCode === 413 || error.type === 'entity.too.large') {
@@ -730,6 +731,18 @@ app.use((error, _request, response, _next) => {
   }
   if (error.statusCode === 429) {
     return response.status(429).json({ error: error.message })
+  }
+  if (error.statusCode === 409) {
+    return response.status(409).json({ error: error.message })
+  }
+  if (error.statusCode === 503) {
+    return response.status(503).json({ error: error.message })
+  }
+  if (error.statusCode === 502) {
+    return response.status(502).json({ error: error.message })
+  }
+  if (error.statusCode === 504) {
+    return response.status(504).json({ error: error.message })
   }
   if (error.name === 'TimeoutError' || error.name === 'AbortError') {
     return response.status(504).json({ error: 'Görsel servisi zaman aşımına uğradı. Lütfen tekrar deneyin.' })
